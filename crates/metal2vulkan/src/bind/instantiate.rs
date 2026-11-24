@@ -544,11 +544,13 @@ pub(crate) fn bind_buffers(
     state: &BindState,
 ) -> Result<BoundBuffers, BindError> {
     check_uniform_aliasing(buffers, state)?;
+    // chl: sized for every buffer once (per draw; was grown push by push)
+    let n = buffers.len();
     let mut out = BoundBuffers {
-        descriptor_ranges: Vec::new(),
-        extents: Vec::new(),
-        residuals: Vec::new(),
-        statics: Vec::new(),
+        descriptor_ranges: Vec::with_capacity(n),
+        extents: Vec::with_capacity(n),
+        residuals: Vec::with_capacity(n),
+        statics: Vec::with_capacity(n),
     };
     for pb in buffers {
         let bound = bound_buffer(state, pb.slot, pb.bound)?;

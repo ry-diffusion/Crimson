@@ -1457,7 +1457,8 @@ pub(super) fn command_uses(
     index: Option<(&Buffer, u64)>,
     indirect: Option<(&Buffer, u64)>,
 ) -> Result<CommandUses, Error> {
-    let mut uses = Vec::new();
+    // chl: one use per planned resource at most, plus the index and argument buffers (per draw; was grown push by push)
+    let mut uses = Vec::with_capacity(plan.uses.len() + command.uses.len() + 2);
     // The keys of the buffers made resident the command reaches through the resident set, by
     // address; every other use names its resource (a descriptor, a root table's static, a view).
     // Those it names are gathered once it reaches one so: until then each use names its key.
