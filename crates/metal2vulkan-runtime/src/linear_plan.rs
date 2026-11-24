@@ -822,6 +822,15 @@ pub(super) fn holding(
     if reads && policy == PaddedReadsPolicy::Alias {
         return Ok(Holds::Padding);
     }
+    // ios-on-pixel (Turnip on the Adreno 640): a padded texture that renders or writes aliases too.
+    // Turnip's linear images carry no UBWC/metadata, so their layout transitions touch no memory, and
+    // draws (viewport, scissor) and GMEM stores (blit scissor) stay inside the image's width: the
+    // bytes between the rows are left alone. The padded textures here are IOSurface planes, whose
+    // padding nobody reads (CA's 1125x2436 frame, rows 4608 bytes apart: a shadow copied in and out
+    // on every frame otherwise).
+    if policy == PaddedReadsPolicy::Alias {
+        return Ok(Holds::Padding);
+    }
     let writers = if usage.contains(TextureUsage::RENDER_TARGET) {
         "its layout transitions read and write, and a render pass's load and store operations \
          write back"
