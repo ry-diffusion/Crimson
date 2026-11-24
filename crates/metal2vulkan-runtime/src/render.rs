@@ -3275,7 +3275,18 @@ impl RenderCommandEncoder {
         // A `DontCare` load of an attachment the pass stores: loaded in a pass whose draws reach
         // no tile, else cleared to zero or its clear value, Metal's answer in each tile a draw
         // reaches (`clear_reach.rs`), and only in those `tiles` bounds.
-        let dont_care = clear_reach::dont_care_loads(&mut layout, reach);
+        let untouched_memoryless = untouched_memoryless();
+        let untouched = |index: usize| {
+            untouched_memoryless && !coverage.may_write(index) && !inputs_read.contains(&(index as u32))
+        };
+        let dont_care = clear_reach::dont_care_loads(&mut layout, reach, &untouched);
+        tight_render_area_log(|| {
+            let kept: Vec<usize> = (0..layout.colors.len())
+                .filter(|&i| layout.colors[i].as_ref().is_some_and(|c| c.memoryless && c.load == LoadAction::DontCare))
+                .collect();
+            format!("memoryless kept DontCare {kept:?}, may write {:?}\n",
+                (0..layout.colors.len()).map(|i| coverage.may_write(i)).collect::<Vec<_>>())
+        });
         if let Some(named) = dont_care.named.clone() {
             device.degrade(Degradation::DontCareLoadTiles, || {
                 (
@@ -8612,4 +8623,11 @@ fn tight_render_area_log(line: impl FnOnce() -> String) {
     if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("/var/local/m2v-area.log") {
         let _ = f.write_all(line().as_bytes());
     }
+}
+
+/// guacamole: `M2V_UNTOUCHED_MEMORYLESS=1` keeps the `DontCare` load of a memoryless color no draw
+/// of the pass writes or reads (`clear_reach::dont_care_loads`).
+fn untouched_memoryless() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("M2V_UNTOUCHED_MEMORYLESS").is_ok_and(|v| v == "1"))
 }

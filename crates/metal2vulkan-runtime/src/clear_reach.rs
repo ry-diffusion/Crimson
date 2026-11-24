@@ -189,7 +189,11 @@ pub(super) fn dont_care_clear(pf: PixelFormat) -> vk::ClearColorValue {
 /// attachment ([`dont_care_clear`]) and to its clear value for depth and stencil. Which attachments took it, and whether the pass took
 /// the near-equivalent (its draws reach the tiles their primitives touch): the attachment it
 /// names, for the notice.
-pub(super) fn dont_care_loads(layout: &mut PassLayout, reach: PassReach) -> DontCareLoads {
+pub(super) fn dont_care_loads(
+    layout: &mut PassLayout,
+    reach: PassReach,
+    untouched: &dyn Fn(usize) -> bool,
+) -> DontCareLoads {
     let load = match reach {
         PassReach::Nothing => LoadAction::Load,
         PassReach::Every | PassReach::Draws => LoadAction::Clear,
@@ -209,8 +213,11 @@ pub(super) fn dont_care_loads(layout: &mut PassLayout, reach: PassReach) -> Dont
         // fragment reads it (an Apple M4, EV ZIN-zp1-m4: a framebuffer fetch of one read 0 in
         // 52 runs of 52, also after a pass that cleared other bytes into the tiles), and it is
         // never stored: a clear to zero is Metal's answer exactly, in a pass that draws.
+        // guacamole: one no draw of the pass writes or reads (`untouched`) is never seen, so its
+        // `DontCare` stays: QuartzCore's second, memoryless color, cleared in every pass, made
+        // Turnip's sysmem rendering cost a full-screen clear and kept every pass in GMEM.
         if color.load == LoadAction::DontCare && color.memoryless {
-            if reach != PassReach::Nothing {
+            if reach != PassReach::Nothing && !untouched(index) {
                 color.load = LoadAction::Clear;
                 color.clear = dont_care_clear(color.target.texture.pixel_format());
             }

@@ -127,6 +127,12 @@ impl Coverage {
         self.unbounded = true;
     }
 
+    /// guacamole: whether a draw of the pass may write color `index` (an unbounded draw may
+    /// write every color).
+    pub(super) fn may_write(&self, index: usize) -> bool {
+        self.unbounded || self.colors.get(index).is_some_and(|c| c.is_some())
+    }
+
     /// The box the draws write color `index` in: `None` where no draw writes it, or the draws
     /// are not bounded, which write over the whole render area.
     pub(super) fn of(&self, index: usize) -> Option<[u32; 4]> {
