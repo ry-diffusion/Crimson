@@ -144,6 +144,7 @@ fn min_mag(f: Filter) -> Result<SamplerMinMagFilter, Error> {
         Filter::Linear => Ok(SamplerMinMagFilter::Linear),
         // A sample through a bicubic sampler is emulated by fetches and a gather ignores the
         // filter: the immutable sampler's filters select nothing, so they are nearest.
+        Filter::Bicubic if super::bicubic::device_linear() => Ok(SamplerMinMagFilter::Linear),
         Filter::Bicubic => Ok(SamplerMinMagFilter::Nearest),
     }
 }
