@@ -550,6 +550,36 @@ impl Importer {
         dma_buf: bool,
         dma_buf_images: bool,
     ) -> Result<Importer, Unsupported> {
+        // Chlorophyll (Poco F1): a device with the dma-buf route but no VK_EXT_external_memory_host (our Turnip on a
+        // kernel without user-pointer BOs) imports every no-copy object as the caller's dma-bufs: an import alignment no
+        // pointer meets makes `host_window` skip the pointer, and the extension's functions are never called.
+        if dma_buf
+            && !enabled
+                .extensions
+                .contains(&VkExtension::ExtExternalMemoryHost)
+        {
+            let page =
+                host_page().ok_or_else(|| Unsupported::not_implemented(Feature::HostMemory))?;
+            let handle = device.handle();
+            let load = |name: &std::ffi::CStr| {
+                // SAFETY: as below.
+                let function = unsafe {
+                    loader_word.restore();
+                    instance.get_device_proc_addr(handle, name.as_ptr())
+                };
+                function.map_or(std::ptr::null(), |function| function as *const c_void)
+            };
+            return Ok(Importer {
+                functions: ash::ext::external_memory_host::DeviceFn::load(load),
+                page,
+                alignment: 1 << 62,
+                metal: None,
+                names: None,
+                dma_buf: Some(ash::khr::external_memory_fd::DeviceFn::load(load)),
+                dma_buf_images,
+                sparse_granule: std::sync::OnceLock::new(),
+            });
+        }
         if !enabled
             .extensions
             .contains(&VkExtension::ExtExternalMemoryHost)

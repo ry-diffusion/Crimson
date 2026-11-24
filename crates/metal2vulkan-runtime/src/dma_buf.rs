@@ -334,10 +334,22 @@ fn dma_buf_length(fd: BorrowedFd<'_>) -> Option<u64> {
     u64::try_from(end).ok()
 }
 
-/// No file is a dma-buf on this system.
+/// Chlorophyll (Poco F1, XNU): a "dma-buf" is a descriptor the libdrm stand-in registered with an IOSurface's BO
+/// (`sweet_drm_surface_prime`, gpu/freedreno-sweet), whose size `sweet_drm_prime_size` answers; any other descriptor
+/// is none.
 #[cfg(not(target_os = "linux"))]
-fn dma_buf_length(_fd: BorrowedFd<'_>) -> Option<u64> {
-    None
+fn dma_buf_length(fd: BorrowedFd<'_>) -> Option<u64> {
+    use std::os::fd::AsRawFd;
+    type PrimeSize = unsafe extern "C" fn(i32) -> i64;
+    // SAFETY: a symbol lookup; the stand-in exports the function with this signature where it is loaded.
+    let size = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"sweet_drm_prime_size".as_ptr()) };
+    if size.is_null() {
+        return None;
+    }
+    // SAFETY: as above.
+    let size: PrimeSize = unsafe { std::mem::transmute(size) };
+    // SAFETY: the stand-in only reads its own table.
+    u64::try_from(unsafe { size(fd.as_raw_fd()) }).ok()
 }
 
 /// How long one wait for the sparse binding lasts before it is asked again.

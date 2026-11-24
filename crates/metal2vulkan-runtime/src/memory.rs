@@ -50,7 +50,7 @@ use std::sync::Mutex;
 
 /// The size of a pooled block, at most the device's `maxMemoryAllocationSize`. SweetMetal2: 8 MB, not 64: the A640's
 /// kernel backs every block with RAM at once, and each process paid 64 MB per memory class it touched.
-pub(super) const BLOCK_BYTES: u64 = 8 << 20;
+pub(super) const BLOCK_BYTES: u64 = 16 << 20;   // Chlorophyll: 16 MB, so an 828x1792 BGRA8 target (5.9 MB) is pooled, not dedicated
 
 /// What memory a resource needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -358,13 +358,21 @@ impl<T> Pool<T> {
         if !block.ranges.is_empty() {
             return None;
         }
+        // Chlorophyll: keep up to three empty pooled blocks (not one): CoreAnimation in backboardd makes and drops
+        // framebuffer-sized targets every frame, and each freed block came straight back as a kernel allocation.
         let keep = !block.dedicated
-            && !self.blocks.iter().enumerate().any(|(other, block)| {
-                other != index
-                    && block
-                        .as_ref()
-                        .is_some_and(|block| !block.dedicated && block.ranges.is_empty())
-            });
+            && self
+                .blocks
+                .iter()
+                .enumerate()
+                .filter(|(other, block)| {
+                    *other != index
+                        && block
+                            .as_ref()
+                            .is_some_and(|block| !block.dedicated && block.ranges.is_empty())
+                })
+                .count()
+                < 3;
         if keep {
             return None;
         }
