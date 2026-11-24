@@ -459,6 +459,17 @@ pub(crate) const DEVIATIONS: &[Measured<DriverDeviation>] = &[
     ),
     nvidia_61571(DriverDeviation::MetalFloatDenormals, NVIDIA_RTX_3090),
     nvidia_61571(DriverDeviation::MetalFloatDenormals, NVIDIA_RTX_5080_LAPTOP),
+    // Chlorophyll: Turnip on Adreno 6xx, not measured by the probes: the ALUs flush f32 denormal operands and results
+    // (Turnip: shaderDenormFlushToZeroFloat32, no DenormPreserve), as Metal does. Without the row every float result took an
+    // exponent-field select, ~5 extra instructions an operation (MercuryPoster's background: ~300 ms a frame on the A630).
+    Measured {
+        fact: DriverDeviation::MetalFloatDenormals,
+        driver: DriverId::MESA_TURNIP,
+        vendor: Some(0x5143),
+        device: None,
+        first: 0,
+        last: u32::MAX,
+    },
     Measured {
         device: Some(APPLE_M3_MAX),
         ..moltenvk_141(DriverDeviation::MetalHalfQuantize)
