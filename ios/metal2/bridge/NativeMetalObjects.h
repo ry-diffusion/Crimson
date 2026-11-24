@@ -64,6 +64,9 @@ bool nmb_binary_archive_serialize(NmbBinaryArchive *, const char *path);
 NmbBuffer *nmb_buffer_new(NmbDevice *, uint64_t length, uint64_t options, const void *bytes /* NULL: zeroed */);
 /* Wraps page-aligned memory the caller keeps mapped until the buffer is released (an IOSurface's base, host pages). */
 NmbBuffer *nmb_buffer_new_no_copy(NmbDevice *, void *pointer, uint64_t length, uint64_t options);
+/* Chlorophyll: the same over a dma-buf of the pages (prime(ctx, start, length, granule, &chunk_length) -> fd or -1; release(ctx) once). */
+NmbBuffer *nmb_buffer_new_no_copy_dma_buf(NmbDevice *, void *pointer, uint64_t length, uint64_t options,
+                                          int (*prime)(void *, void *, uint64_t, uint64_t, uint64_t *), void (*release)(void *), void *ctx);
 void nmb_buffer_release(NmbBuffer *);
 void *nmb_buffer_contents(const NmbBuffer *);
 uint64_t nmb_buffer_length(const NmbBuffer *);
@@ -71,6 +74,7 @@ uint64_t nmb_buffer_gpu_address(const NmbBuffer *);
 
 struct NmbTextureDescriptor {
     uint64_t type, format, width, height, depth, levels, samples, array_length, usage, options;
+    uint64_t swizzle;   /* MTLTextureSwizzleChannels' four bytes, red lowest; 0: the default */
 };
 /* Heaps: type 0 automatic / 1 placement; offset UINT64_MAX asks an automatic heap to place the resource. */
 NmbHeap *nmb_heap_new(NmbDevice *, uint64_t type, uint64_t size, uint64_t options);
@@ -131,6 +135,9 @@ struct NmbRenderPipelineDescriptor {
     uint64_t vertex_inputs; /* 0: no vertex descriptor */
     struct NmbVertexAttribute attributes[31];
     struct NmbVertexLayout layouts[31];
+    /* Chlorophyll: MTLRenderPipelineDescriptor's vertex/fragmentLinkedFunctions (functions + privateFunctions), valid for the call */
+    NmbFunction *const *vertex_linked; size_t vertex_linked_count;
+    NmbFunction *const *fragment_linked; size_t fragment_linked_count;
 };
 NmbRenderPipeline *nmb_render_pipeline_new(NmbDevice *, const struct NmbRenderPipelineDescriptor *);
 /* Descriptor binaryArchives and MTLPipelineOption bits. NULL options means defaults.

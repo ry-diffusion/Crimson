@@ -9,8 +9,8 @@ use metal2vulkan::metal::state::{DepthStencilDescriptor, StencilDescriptor};
 use metal2vulkan::library::{FunctionConstantValue, FunctionConstantValues};
 use metal2vulkan::metal::{
     BlendFactor, BlendOperation, ColorWriteMask, CompareFunction, CullMode, DataType, IndexType, PixelFormat, PrimitiveTopologyClass,
-    PrimitiveType, RenderStages, SamplerAddressMode, SamplerBorderColor, SamplerMinMagFilter, SamplerMipFilter, StencilOperation, TextureType,
-    TextureUsage, TriangleFillMode, VertexFormat, VertexStepFunction, Winding,
+    PrimitiveType, RenderStages, SamplerAddressMode, SamplerBorderColor, SamplerMinMagFilter, SamplerMipFilter, StencilOperation, TextureSwizzle,
+    TextureSwizzleChannels, TextureType, TextureUsage, TriangleFillMode, VertexFormat, VertexStepFunction, Winding,
 };
 use metal2vulkan::pipeline::{
     ColorAttachmentDescriptor, ComputePipelineDescriptor, RenderPipelineDescriptor, StageSource, VertexAttributeDescriptor, VertexBufferLayoutDescriptor,
@@ -684,6 +684,8 @@ pub struct NmbTextureDescriptor {
     pub array_length: u64,
     pub usage: u64,
     pub options: u64,
+    /// `swizzle`: Metal's four raw bytes, red lowest; 0: the default.
+    pub swizzle: u64,
 }
 
 pub struct NmbTexture(Texture);
@@ -701,6 +703,10 @@ fn texture_descriptor(d: *const NmbTextureDescriptor) -> Result<TextureDescripto
     out.array_length = d.array_length;
     out.usage = raw::<TextureUsage>(d.usage, "texture usage")?;
     out.resource_options = options(d.options)?;
+    if d.swizzle != 0 {
+        let c = |i: u32| raw::<TextureSwizzle>((d.swizzle >> (8 * i)) & 0xff, "texture swizzle");
+        out.swizzle = TextureSwizzleChannels::new(c(0)?, c(1)?, c(2)?, c(3)?);
+    }
     Ok(out)
 }
 
@@ -810,6 +816,14 @@ pub extern "C" fn nmb_texture_describe(texture: *const NmbTexture, out: *mut Nmb
             array_length: t.array_length(),
             usage: t.usage().as_raw() as u64,
             options: t.resource_options().raw(),
+            swizzle: {
+                let s = t.swizzle();
+                if s == TextureSwizzleChannels::DEFAULT {
+                    0
+                } else {
+                    [s.red, s.green, s.blue, s.alpha].iter().enumerate().fold(0, |w, (i, c)| w | (c.as_raw() as u64) << (8 * i))
+                }
+            },
         };
         Ok(())
     })
@@ -1096,6 +1110,21 @@ pub struct NmbRenderPipelineDescriptor {
     pub vertex_inputs: u64,
     pub attributes: [NmbVertexAttribute; 31],
     pub layouts: [NmbVertexLayout; 31],
+    pub vertex_linked: *const *mut NmbFunction,
+    pub vertex_linked_count: usize,
+    pub fragment_linked: *const *mut NmbFunction,
+    pub fragment_linked_count: usize,
+}
+
+/// Chlorophyll: a stage's linked functions (RenderBox's `custom_fn`) from the descriptor's list.
+fn linked_functions(list: *const *mut NmbFunction, count: usize) -> Result<metal2vulkan::pipeline::LinkedFunctions, String> {
+    let mut out = metal2vulkan::pipeline::LinkedFunctions::new();
+    for i in 0..count {
+        // SAFETY: the header's contract: `count` handles, valid for the call.
+        let f = unsafe { *list.add(i) };
+        out = out.with_function(get(f)?.0.linked_function());
+    }
+    Ok(out)
 }
 
 fn optional_format(value: u64) -> Result<Option<PixelFormat>, String> {
@@ -1149,9 +1178,17 @@ pub unsafe extern "C" fn nmb_render_pipeline_new_with_options(device: *mut NmbDe
 
 fn render_descriptor(descriptor: *const NmbRenderPipelineDescriptor) -> Result<RenderPipelineDescriptor, String> {
         let d = get(descriptor)?;
-        let mut out = RenderPipelineDescriptor::new(StageSource::Function(get(d.vertex)?.0.function_descriptor()));
+        let mut vertex = get(d.vertex)?.0.function_descriptor();
+        if d.vertex_linked_count > 0 {
+            vertex = vertex.with_linked(linked_functions(d.vertex_linked, d.vertex_linked_count)?);
+        }
+        let mut out = RenderPipelineDescriptor::new(StageSource::Function(vertex));
         if !d.fragment.is_null() {
-            out.fragment = Some(StageSource::Function(get(d.fragment)?.0.function_descriptor()));
+            let mut fragment = get(d.fragment)?.0.function_descriptor();
+            if d.fragment_linked_count > 0 {
+                fragment = fragment.with_linked(linked_functions(d.fragment_linked, d.fragment_linked_count)?);
+            }
+            out.fragment = Some(StageSource::Function(fragment));
         }
         for (slot, c) in out.color_attachments.iter_mut().zip(d.colors.iter()) {
             if c.format == 0 {
@@ -2103,5 +2140,55 @@ pub extern "C" fn nmb_blit_generate_mipmaps(encoder: *mut NmbEncoder, texture: *
     guard(false, || {
         blit(encoder)?.generate_mipmaps(&get(texture)?.0).map_err(e("mipmaps"))?;
         Ok(true)
+    })
+}
+
+// Chlorophyll (Poco F1): a no-copy buffer over an IOSurface whose pages reach Vulkan as a dma-buf. Our Turnip has no
+// VK_EXT_external_memory_host and our kernel no user-pointer BOs, so the runtime's pointer import is always refused and it
+// asks `prime` for the pages (metal2vulkan's DmaBufSource). `prime(ctx, start, length, granule, &chunk_length)` returns a
+// dma-buf fd whose bytes 0..chunk_length are the pages from `start`, or -1 (the runtime then refuses the buffer, or
+// shadows a texture). `release(ctx)` runs once the runtime lets go of the source.
+pub type NmbPrimeFn = unsafe extern "C" fn(*mut c_void, *mut c_void, u64, u64, *mut u64) -> i32;
+pub type NmbPrimeReleaseFn = unsafe extern "C" fn(*mut c_void);
+struct PrimeCtx(NmbPrimeFn, NmbPrimeReleaseFn, *mut c_void);
+// SAFETY: the context is the caller's (a retained IOSurfaceRef), usable from any thread.
+unsafe impl Send for PrimeCtx {}
+unsafe impl Sync for PrimeCtx {}
+impl Drop for PrimeCtx {
+    fn drop(&mut self) {
+        // SAFETY: the caller's contract: called once.
+        unsafe { (self.1)(self.2) }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nmb_buffer_new_no_copy_dma_buf(device: *mut NmbDevice, pointer: *mut c_void, length: u64, options_word: u64,
+                                                        prime: NmbPrimeFn, release_ctx: NmbPrimeReleaseFn, ctx: *mut c_void)
+                                                        -> *mut NmbBuffer {
+    let holder = std::sync::Arc::new(PrimeCtx(prime, release_ctx, ctx));
+    guard(std::ptr::null_mut(), || {
+        use std::os::fd::FromRawFd;
+        let device = get(device)?;
+        let pointer = NonNull::new(pointer as *mut u8).ok_or("null memory")?;
+        let h = holder.clone();
+        let source: metal2vulkan_runtime::DmaBufSource = std::sync::Arc::new(move |req: metal2vulkan_runtime::DmaBufRequest| {
+            let mut chunk = 0u64;
+            // SAFETY: the caller's contract for `prime`.
+            let fd = unsafe { (h.0)(h.2, req.start.as_ptr() as *mut c_void, req.length, req.granule, &mut chunk) };
+            if fd < 0 || chunk == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+            }
+            // SAFETY: `prime` hands over a fresh descriptor.
+            Ok(vec![metal2vulkan_runtime::DmaBufChunk { fd: unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) }, length: chunk }])
+        });
+        // SAFETY: the caller keeps the surface's pages mapped while the buffer lives (it retains the surface).
+        let memory = unsafe { HostMemory::with_dma_buf(pointer, source) };
+        let modes = options(options_word)?;
+        let buffer = {
+            let _gate = device.2.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            // SAFETY: as above.
+            unsafe { device.0.new_buffer_with_bytes_no_copy(memory, length, modes, None) }
+        };
+        Ok(boxed(NmbBuffer(buffer.map_err(e("dma-buf no-copy buffer"))?)))
     })
 }
