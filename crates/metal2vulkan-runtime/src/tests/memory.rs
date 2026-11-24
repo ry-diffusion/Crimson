@@ -234,30 +234,33 @@ fn host_transfer_images_prefer_host_cached_memory() {
     }
 }
 
+/// Chlorophyll: three empty pooled blocks are always kept; past three, the one empty the longest is freed once it has
+/// been empty for five seconds.
 #[test]
-fn pooled_blocks_place_until_full_and_one_empty_block_is_kept() {
-    let mut pool: Pool<&str> = Pool::default();
+fn pooled_blocks_place_until_full_and_empty_blocks_are_kept_for_a_while() {
+    use std::time::{Duration, Instant};
+    let mut pool: Pool<u32> = Pool::default();
     assert_eq!(pool.place(16, 16), None, "no block yet");
-    let first = pool.add(256, false, "first", 100);
-    assert_eq!(pool.place(100, 64), Some((first, 128)));
+    let blocks: Vec<usize> = (0..5).map(|n| pool.add(256, false, n, 200)).collect();
     assert_eq!(pool.place(100, 64), None, "full");
-    let second = pool.add(256, false, "second", 200);
-    assert_ne!(first, second);
-    assert_eq!(pool.blocks(), 2);
-    // Emptying the first block keeps it: it is the only empty pooled block.
-    assert_eq!(pool.release(first, 0, 100), None);
-    assert_eq!(pool.release(first, 128, 100), None);
-    assert_eq!(pool.blocks(), 2);
-    // Emptying the second while the first is empty frees the second.
-    assert_eq!(pool.release(second, 0, 200), Some("second"));
-    assert_eq!(pool.blocks(), 1);
-    // The kept block serves the next request; its slot is reused for a new block.
-    assert_eq!(pool.place(256, 1), Some((first, 0)));
-    let third = pool.add(256, false, "third", 1);
-    assert_eq!(third, second, "the freed slot is reused");
-    let mut drained: Vec<&str> = pool.drain().collect();
-    drained.sort_unstable();
-    assert_eq!(drained, ["first", "third"]);
+    let start = Instant::now();
+    let at = |seconds| start + Duration::from_secs(seconds);
+    for &block in &blocks[..4] {
+        assert_eq!(pool.release_at(block, 0, 200, at(1)), None, "emptied a second ago at most");
+    }
+    assert_eq!(pool.blocks(), 5);
+    // The kept blocks serve the next requests, and emptying one again makes it the newest.
+    assert_eq!(pool.place(256, 1), Some((blocks[0], 0)));
+    assert_eq!(pool.release_at(blocks[0], 0, 256, at(4)), None);
+    // Past three empty blocks, the one empty the longest goes once five seconds have passed.
+    assert_eq!(pool.release_at(blocks[4], 0, 200, at(7)), Some(1));
+    assert_eq!(pool.blocks(), 4);
+    assert_eq!(pool.place(256, 1), Some((blocks[0], 0)));
+    assert_eq!(pool.release_at(blocks[0], 0, 256, at(20)), Some(2));
+    assert_eq!(pool.place(256, 1), Some((blocks[0], 0)));
+    assert_eq!(pool.release_at(blocks[0], 0, 256, at(40)), None, "three are kept");
+    assert_eq!(pool.add(256, false, 9, 1), blocks[1], "a freed slot is reused");
+    assert_eq!(pool.drain().count(), 4);
     assert_eq!(pool.blocks(), 0);
 }
 

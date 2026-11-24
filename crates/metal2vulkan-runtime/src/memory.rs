@@ -47,10 +47,14 @@ use std::ptr::NonNull;
 #[cfg(unix)]
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// The size of a pooled block, at most the device's `maxMemoryAllocationSize`. SweetMetal2: 8 MB, not 64: the A640's
 /// kernel backs every block with RAM at once, and each process paid 64 MB per memory class it touched.
 pub(super) const BLOCK_BYTES: u64 = 16 << 20;   // Chlorophyll: 16 MB, so an 828x1792 BGRA8 target (5.9 MB) is pooled, not dedicated
+
+/// How long an empty pooled block past the three always kept stays ([`Pool::release`]).
+const EMPTY_KEPT: Duration = Duration::from_secs(5);
 
 /// What memory a resource needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -275,6 +279,8 @@ pub(super) struct Pool<T> {
 struct PoolBlock<T> {
     ranges: RangeAllocator,
     dedicated: bool,
+    /// When it last emptied ([`Pool::release`]).
+    emptied: Instant,
     payload: T,
 }
 
@@ -315,6 +321,7 @@ impl<T> Pool<T> {
         let block = Some(PoolBlock {
             ranges,
             dedicated,
+            emptied: Instant::now(),
             payload,
         });
         match self.blocks.iter().position(Option::is_none) {
@@ -353,30 +360,42 @@ impl<T> Pool<T> {
     /// must now be freed: a dedicated block, or a pooled block that emptied while another empty
     /// pooled block is kept.
     pub(super) fn release(&mut self, index: usize, offset: u64, size: u64) -> Option<T> {
+        self.release_at(index, offset, size, Instant::now())
+    }
+
+    /// [`Pool::release`] at `now`.
+    pub(super) fn release_at(
+        &mut self,
+        index: usize,
+        offset: u64,
+        size: u64,
+        now: Instant,
+    ) -> Option<T> {
         let block = self.blocks.get_mut(index)?.as_mut()?;
         block.ranges.free(offset, size);
         if !block.ranges.is_empty() {
             return None;
         }
-        // Chlorophyll: keep up to three empty pooled blocks (not one): CoreAnimation in backboardd makes and drops
-        // framebuffer-sized targets every frame, and each freed block came straight back as a kernel allocation.
-        let keep = !block.dedicated
-            && self
-                .blocks
-                .iter()
-                .enumerate()
-                .filter(|(other, block)| {
-                    *other != index
-                        && block
-                            .as_ref()
-                            .is_some_and(|block| !block.dedicated && block.ranges.is_empty())
-                })
-                .count()
-                < 3;
-        if keep {
+        if block.dedicated {
+            return self.blocks[index].take().map(|block| block.payload);
+        }
+        block.emptied = now;
+        // Chlorophyll: three empty pooled blocks are always kept (not one), and past three the one empty the longest
+        // is freed once it has been empty for EMPTY_KEPT. CoreAnimation in backboardd takes several framebuffer-sized
+        // targets per animation and drops them after it, and making a block costs 60-80 ms in our kernel.
+        // shortcut: trims only when a block empties, so an idle process holds its empty blocks; add a timer if idle
+        // memory matters.
+        let empty = || {
+            (self.blocks.iter().enumerate()).filter_map(|(index, block)| {
+                let block = block.as_ref()?;
+                (!block.dedicated && block.ranges.is_empty()).then_some((block.emptied, index))
+            })
+        };
+        let (emptied, oldest) = empty().min()?;
+        if empty().count() <= 3 || now.saturating_duration_since(emptied) < EMPTY_KEPT {
             return None;
         }
-        self.blocks[index].take().map(|block| block.payload)
+        self.blocks[oldest].take().map(|block| block.payload)
     }
 
     /// Every block's payload, emptying the pool.
@@ -1382,7 +1401,9 @@ fn place(
     if candidates.is_empty() {
         return Err(Error::OutOfMemory(MemoryKind::Device));
     }
-    let dedicated = fit == Fit::Apart || size > maker.block_bytes / 2;
+    // Chlorophyll: up to 3/4 of a block (not 1/2) is pooled: an 828x1792 RGBA16F target (12 MB) then takes a kept
+    // 16 MB block, not a kernel allocation of its own that is freed with it.
+    let dedicated = fit == Fit::Apart || size > maker.block_bytes / 4 * 3;
     let block_size = if dedicated { size } else { maker.block_bytes };
     let mut failure = Error::OutOfMemory(MemoryKind::Device);
     for type_index in candidates {
