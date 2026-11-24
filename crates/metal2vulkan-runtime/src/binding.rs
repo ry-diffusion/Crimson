@@ -69,7 +69,7 @@ use metal2vulkan::bind::{
 };
 use metal2vulkan::metal::sampler::OpaqueBlackBorder;
 use metal2vulkan::pipeline::{HandleClass, SlotClass, SlotRef, Stage, StorageAttachmentView};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::ops::Deref;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -876,7 +876,7 @@ const KEPT_VIEWS: usize = 256;
 pub(super) struct BindMemo {
     /// The views epoch the views were kept under.
     epoch: u64,
-    views: HashMap<ViewKey, vk::ImageView>,
+    views: crate::key_hash::KeyMap<ViewKey, vk::ImageView>,
     samplers: Vec<KeptSampler>,
 }
 

@@ -41,7 +41,9 @@ use super::residency::{Residency, Used};
 use super::resource::ResourceKey;
 use super::texture::{Texture, TextureMemory, TextureShared};
 use super::Device;
+use crate::key_hash::KeyHasher;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::hash::BuildHasherDefault;
 use std::sync::{Mutex, Weak};
 
 /// The buffers, textures and heaps a command buffer's commands use, each listed as what owns
@@ -381,9 +383,9 @@ impl Reached {
 /// [`UsedResources`] as it is gathered: each owner once.
 #[derive(Default)]
 struct Listing {
-    buffers: HashSet<Buffer>,
-    textures: HashSet<Texture>,
-    heaps: HashSet<Heap>,
+    buffers: HashSet<Buffer, BuildHasherDefault<KeyHasher>>,
+    textures: HashSet<Texture, BuildHasherDefault<KeyHasher>>,
+    heaps: HashSet<Heap, BuildHasherDefault<KeyHasher>>,
 }
 
 impl Listing {
