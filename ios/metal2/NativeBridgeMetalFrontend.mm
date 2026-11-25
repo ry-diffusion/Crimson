@@ -1264,19 +1264,26 @@ static bool chlBatchOn() {static const bool on=access("/private/var/tmp/m2v-batc
  const unsigned worker=cb->chlQueueIndex;
  auto *calls=new std::vector<std::pair<std::function<bool()>,const char *>>(std::move(_batch));
  _batch.clear();
- gChlQueued[worker]+=(int)calls->size();
+ _batch.reserve(16);   // a moved-from vector has no capacity: CA's ~8-call batches regrew it ~4 times a draw
+ const int n=(int)calls->size();
+ gChlQueued[worker]+=n;
  dispatch_async(cb->chlQueue,^{
   const bool meter=chlCpuMeterOn();
-  const uint64_t w0=meter?mach_absolute_time():0,c0=meter?clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID):0;
+  const uint64_t c0=meter?clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID):0;
   if(meter)gChlBatchOn[chlCpuNumber()]++;
+  // one clock read per call and the shared counters once per batch (they are atomics all three workers write)
+  uint64_t ticks[3]={},pipes=0,t0=mach_absolute_time();const uint64_t w0=t0;
   for(auto &c:*calls){
-   const uint64_t t0=mach_absolute_time();const char *what=c.second;
+   const char *what=c.second;
    if(!c.first())[cb refuse:[NSString stringWithFormat:@"%s: %@",what,lastError()]];
-   gChlQueued[worker]--;
-   gChlWorkTicks[what[0]=='d' && what[1]=='r'?0:what[0]=='e'?1:2]+=mach_absolute_time()-t0;
-   if(what[3]=='R')gChlPipeSets++;
+   const uint64_t t1=mach_absolute_time();
+   ticks[what[0]=='d' && what[1]=='r'?0:what[0]=='e'?1:2]+=t1-t0;t0=t1;
+   if(what[3]=='R')pipes++;
   }
-  if(meter){gChlBatchCpuNs+=clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)-c0;gChlBatchWall+=mach_absolute_time()-w0;}
+  gChlQueued[worker]-=n;
+  for(int k=0;k<3;k++)if(ticks[k])gChlWorkTicks[k]+=ticks[k];
+  if(pipes)gChlPipeSets+=pipes;
+  if(meter){gChlBatchCpuNs+=clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)-c0;gChlBatchWall+=t0-w0;}
   delete calls;
  });
 }
@@ -3726,16 +3733,19 @@ extern "C" id native_bridge_metal_open(const char *loader,const char *cache,uint
    const uint64_t timed=gChlTimedFrames.load()-lastTimed,ageMs10=timed?(gChlAgeUs.load()-lastAge)/timed/100:0,commitMs10=timed?(gChlCommitUs.load()-lastCommit)/timed/100:0;
    lastAge=gChlAgeUs.load();lastCommit=gChlCommitUs.load();lastTimed=gChlTimedFrames.load();
    static uint64_t lastGpu=0;const uint64_t gpuNow=gChlGpuUs.load(),gpuMs=(gpuNow-lastGpu)/1000,gpuMax=gChlGpuMaxUs.exchange(0)/1000;lastGpu=gpuNow;
+   static uint64_t lastSets[2];uint64_t sets[2]={};nmb_set_zero_stats(sets);
    static mach_timebase_info_data_t tb;if(!tb.denom)mach_timebase_info(&tb);
    unsigned long long wms[4];for(int k=0;k<4;k++)wms[k]=gChlWorkTicks[k].exchange(0)*tb.numer/tb.denom/1000000;
-   NBLOG(@"fps: %u frames/s, intervals <=17ms %u, <=25 %u, <=34 %u, <=100 %u, longer %u (max %llu ms); draws/frame %u (max %u); commit-to-done %llu us mean over %llu; shadow copies %llu KB; passes %llu; vkpipelines %llu (%llu ms); frame age %llu.%llu ms, in commit %llu.%llu ms; gpu %llu ms (max %llu); worker ms draw %llu end %llu set %llu commit %llu, pipeline sets %llu, early commits %llu; commit-to-submit %llu us; batches cpu %llu of wall %llu ms, started on cpu0..7 %llu %llu %llu %llu %llu %llu %llu %llu",
+   NBLOG(@"fps: %u frames/s, intervals <=17ms %u, <=25 %u, <=34 %u, <=100 %u, longer %u (max %llu ms); draws/frame %u (max %u); commit-to-done %llu us mean over %llu; shadow copies %llu KB; passes %llu; vkpipelines %llu (%llu ms); frame age %llu.%llu ms, in commit %llu.%llu ms; gpu %llu ms (max %llu); worker ms draw %llu end %llu set %llu commit %llu, pipeline sets %llu, early commits %llu; commit-to-submit %llu us; set 0 reused %llu of %llu draws; batches cpu %llu of wall %llu ms, started on cpu0..7 %llu %llu %llu %llu %llu %llu %llu %llu",
          frames,bins[0],bins[1],bins[2],bins[3],bins[4],(unsigned long long)(longest/1000),frames?draws/frames:0,maxDraws,
          (unsigned long long)(dc?dt/dc:0),(unsigned long long)dc,(unsigned long long)shadowKb,(unsigned long long)passes,(unsigned long long)pipes,(unsigned long long)pipeMs,
          (unsigned long long)(ageMs10/10),(unsigned long long)(ageMs10%10),(unsigned long long)(commitMs10/10),(unsigned long long)(commitMs10%10),(unsigned long long)gpuMs,(unsigned long long)gpuMax,wms[0],wms[1],wms[2],wms[3],(unsigned long long)gChlPipeSets.exchange(0),(unsigned long long)gChlCuts.exchange(0),
          (unsigned long long)(gChlSubmitLagUs.exchange(0)/std::max<uint64_t>(1,gChlSubmitLagN.exchange(0))),
+         (unsigned long long)(sets[1]-lastSets[1]),(unsigned long long)(sets[0]-lastSets[0]),
          (unsigned long long)(gChlBatchCpuNs.exchange(0)/1000000),(unsigned long long)(gChlBatchWall.exchange(0)*tb.numer/tb.denom/1000000),
          (unsigned long long)gChlBatchOn[0].exchange(0),(unsigned long long)gChlBatchOn[1].exchange(0),(unsigned long long)gChlBatchOn[2].exchange(0),(unsigned long long)gChlBatchOn[3].exchange(0),
          (unsigned long long)gChlBatchOn[4].exchange(0),(unsigned long long)gChlBatchOn[5].exchange(0),(unsigned long long)gChlBatchOn[6].exchange(0),(unsigned long long)gChlBatchOn[7].exchange(0));
+   lastSets[0]=sets[0];lastSets[1]=sets[1];
   });
   dispatch_resume(timer);
   static dispatch_source_t keep;keep=timer;

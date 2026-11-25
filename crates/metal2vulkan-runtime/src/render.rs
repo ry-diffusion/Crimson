@@ -1123,8 +1123,53 @@ pub struct RenderCommandEncoder {
     quiet_bound_values: Option<QuietBoundValues>,
     /// The views and sampler descriptions its draws' binds made or found (`binding::BindMemo`).
     bind_memo: binding::BindMemo,
+    /// The last draw's set 0 and what was written into it ([`SetMemo`]).
+    set_memo: Option<SetMemo>,
+    /// The live sampler states its last draw listed (`Device::argument_samplers_kept`).
+    kept_samplers: super::sampler::KeptSamplers,
     /// What its last draw retained of its own ([`LastRetained`]).
     last_retained: LastRetained,
+}
+
+/// Draws of every render encoder and those whose set 0 was the previous draw's ([`SetMemo`]),
+/// for the frontend's fps meter.
+pub static SET_ZERO_DRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static SET_ZERO_REUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A draw's set 0, the variant objects it was allocated for and its writes, each as its target
+/// and raw handles.
+struct SetMemo {
+    objects: usize,
+    writes: Vec<(u32, u32, u32, i32, [u64; 3])>,
+    set: vk::DescriptorSet,
+}
+
+impl SetMemo {
+    fn key(write: &binding::Write) -> (u32, u32, u32, i32, [u64; 3]) {
+        use vk::Handle;
+        let info = match write.info {
+            binding::Info::Buffer(b) => [b.buffer.as_raw(), b.offset, b.range],
+            binding::Info::Image(i) => [i.sampler.as_raw(), i.image_view.as_raw(), i.image_layout.as_raw() as u64],
+            binding::Info::Texel(v) => [v.as_raw(), u64::MAX, 0],
+        };
+        (write.set, write.binding, write.element, write.ty.as_raw(), info)
+    }
+
+    fn of(objects: &Arc<VariantObjects>, writes: &[binding::Write], set: vk::DescriptorSet) -> Self {
+        SetMemo {
+            objects: Arc::as_ptr(objects) as usize,
+            writes: writes.iter().map(Self::key).collect(),
+            set,
+        }
+    }
+
+    /// The memo's set where `objects` writes exactly `writes`.
+    fn same(&self, objects: &Arc<VariantObjects>, writes: &[binding::Write]) -> Option<vk::DescriptorSet> {
+        (self.objects == Arc::as_ptr(objects) as usize
+            && self.writes.len() == writes.len()
+            && self.writes.iter().zip(writes).all(|(kept, write)| *kept == Self::key(write)))
+        .then_some(self.set)
+    }
 }
 
 /// What a render encoder's last draw retained of its own (its pipeline state, its variant's
@@ -1387,6 +1432,8 @@ impl CommandBuffer {
             log,
             quiet_bound_values: None,
             bind_memo: binding::BindMemo::default(),
+            set_memo: None,
+            kept_samplers: Default::default(),
             last_retained: LastRetained::default(),
         })
     }
@@ -5890,7 +5937,7 @@ impl RenderCommandEncoder {
         let max = pipeline.base().graphics.max_vertex_amplification_count;
         // The device's sampler states, less those at IDs no set-1 sampler array of the variant
         // holds (`heap_sets::fit_samplers`).
-        let mut argument_samplers = self.core.device().argument_samplers();
+        let mut argument_samplers = self.core.device().argument_samplers_kept(&mut self.kept_samplers);
         let function_tables = pipeline.function_tables();
         let mut unlisted = None;
         let reads_tile_memory = pipeline.reads_tile_memory();
@@ -6742,11 +6789,28 @@ impl RenderCommandEncoder {
         // Set 0 per draw; set 1 the device's (written below, once nothing refuses).
         let mut writes = bound.writes;
         let heap_writes: Vec<_> = writes.extract_if(.., |write| write.set > 0).collect();
-        let set = objects.set_zero(&mut self.core.command_buffer().state().descriptors)?;
-        // SAFETY: the set was just allocated and no command uses it yet; every buffer, view
-        // and sampler written is live (the command buffer retains them below, and a refusal
-        // leaves the set unused in its pool).
-        unsafe { binding::write_sets(&device, set.as_slice(), &writes) }?;
+        // The last draw's set where the same variant objects write the same handles into it:
+        // a set is never written after its first draw, the encoder's sets come from one command
+        // buffer's pools, and that command buffer still retains every handle the set names, so
+        // an equal handle is the same object (CoreAnimation's consecutive draws often bind the
+        // same; a fresh set each draw was an allocate, an update and a bind).
+        let reused = self.set_memo.as_ref().and_then(|memo| memo.same(&objects, &writes));
+        SET_ZERO_DRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let set = match reused {
+            Some(set) => {
+                SET_ZERO_REUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Some(set)
+            }
+            None => {
+                let set = objects.set_zero(&mut self.core.command_buffer().state().descriptors)?;
+                // SAFETY: the set was just allocated and no command uses it yet; every buffer,
+                // view and sampler written is live (the command buffer retains them below, and
+                // a refusal leaves the set unused in its pool).
+                unsafe { binding::write_sets(&device, set.as_slice(), &writes) }?;
+                self.set_memo = set.map(|set| SetMemo::of(&objects, &writes, set));
+                set
+            }
+        };
         // The Vulkan draws: the binder's, the index bounds pass's two, or the index rewrite
         // pass's one.
         let sized = device.shared().sized_index_bind;

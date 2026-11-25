@@ -2095,6 +2095,8 @@ impl RenderExecution {
             log: None,
             quiet_bound_values: None,
             bind_memo: crate::binding::BindMemo::default(),
+            set_memo: None,
+            kept_samplers: Default::default(),
             last_retained: Default::default(),
         }
     }

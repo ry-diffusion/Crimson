@@ -250,6 +250,19 @@ pub extern "C" fn nmb_device_work_stats(device: *const NmbDevice, out: *mut u64)
     })
 }
 
+/// Render draws so far and those whose set 0 was the previous draw's, into the caller's two words.
+#[unsafe(no_mangle)]
+pub extern "C" fn nmb_set_zero_stats(out: *mut u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if out.is_null() {
+        return;
+    }
+    // SAFETY: the header's two words.
+    let out = unsafe { std::slice::from_raw_parts_mut(out, 2) };
+    out[0] = metal2vulkan_runtime::SET_ZERO_DRAWS.load(Relaxed);
+    out[1] = metal2vulkan_runtime::SET_ZERO_REUSED.load(Relaxed);
+}
+
 /// Separate artifact and driver-record counters, mirroring the C ABI.
 #[repr(C)]
 pub struct NmbShaderCacheStats {

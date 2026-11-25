@@ -306,6 +306,13 @@ impl Drop for OwnedSampler {
 #[derive(Clone)]
 pub struct SamplerState(Arc<SamplerShared>);
 
+/// An encoder's last list of the live sampler states ([`Device::argument_samplers_kept`]).
+#[derive(Default)]
+pub(super) struct KeptSamplers {
+    epoch: Option<u64>,
+    states: Vec<std::sync::Weak<SamplerShared>>,
+}
+
 pub(super) struct SamplerShared {
     device: Device,
     /// The descriptor the state samples with ([`taken_descriptor`]).
@@ -469,6 +476,24 @@ impl Device {
     pub(super) fn argument_samplers(&self) -> Vec<SamplerState> {
         let states = lock(&self.shared().resource_ids).samplers();
         states.into_iter().map(SamplerState).collect()
+    }
+
+    /// [`Self::argument_samplers`] through `kept`, an encoder's last list: taken again from the
+    /// IDs (their lock, a walk of every sampler slot) only after a sampler slot changed, or a
+    /// kept state died. `kept` holds the states weakly, so it keeps none alive.
+    pub(super) fn argument_samplers_kept(&self, kept: &mut KeptSamplers) -> Vec<SamplerState> {
+        use crate::resource_ids::SAMPLER_EPOCH;
+        let epoch = SAMPLER_EPOCH.load(Ordering::Acquire);
+        if kept.epoch == Some(epoch) {
+            let states: Option<Vec<_>> = kept.states.iter().map(|s| s.upgrade().map(SamplerState)).collect();
+            if let Some(states) = states {
+                return states;
+            }
+        }
+        let states = self.argument_samplers();
+        kept.epoch = Some(epoch);
+        kept.states = states.iter().map(|s| Arc::downgrade(&s.0)).collect();
+        states
     }
 }
 

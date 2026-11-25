@@ -1862,3 +1862,15 @@ fn shader_stencil_words_pack_each_face_then_the_references() {
     assert_eq!(references, 0xA5 | 0x3C << 8);
     assert_eq!(zero, 0);
 }
+
+/// A push field's bytes read back as collected: inline up to 32, on the heap past it.
+#[test]
+fn field_bytes_keep_every_byte_inline_or_not() {
+    for len in [0usize, 4, 16, 32, 33, 40] {
+        let want: Vec<u8> = (0..len).map(|i| i as u8).collect();
+        let got: FieldBytes = want.iter().copied().collect();
+        assert_eq!(&*got, &want[..], "{len} bytes");
+        assert_eq!(matches!(got, FieldBytes::Heap(_)), len > 32, "{len} bytes");
+    }
+    assert_eq!(&*FieldBytes::from(vec![1, 2, 3]), &[1, 2, 3]);
+}

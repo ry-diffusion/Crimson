@@ -269,6 +269,10 @@ pub(super) enum StateKind {
     Render,
 }
 
+/// Bumped (under the IDs' lock) whenever a sampler ID's slot changes, in any device: a draw's
+/// list of the live sampler states stays good while it is the same (`Device::argument_samplers_kept`).
+pub(super) static SAMPLER_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// One device's resource IDs.
 #[derive(Debug)]
 pub(super) struct ResourceIds {
@@ -818,6 +822,9 @@ impl IdHold {
     /// Make `holder`, the resource of this ID, its slot's holder.
     pub(super) fn hold(&self, holder: Holder) {
         let mut all = lock(&self.ids);
+        if self.space == IdSpace::Sampler {
+            SAMPLER_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
         let generation = all.next();
         if self.space == IdSpace::Pipeline {
             all.released_pipelines.remove(&self.id);
@@ -847,6 +854,9 @@ impl IdHold {
 impl Drop for IdHold {
     fn drop(&mut self) {
         let mut all = lock(&self.ids);
+        if self.space == IdSpace::Sampler {
+            SAMPLER_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
         if self.space == IdSpace::Sampler && self.id != 0 {
             all.count_sampler_id(false);
         }

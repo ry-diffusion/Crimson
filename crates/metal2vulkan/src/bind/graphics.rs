@@ -2090,6 +2090,46 @@ fn shadow_template(p: &RenderPipeline) -> Option<ShadowTemplate> {
     })
 }
 
+/// A push field's bytes, inline up to 32: CoreAnimation's are 4-16 bytes, and a `Vec` each was a
+/// malloc and a free per field per draw (2026-11-25 profile); a longer field keeps its `Vec`.
+enum FieldBytes {
+    Inline([u8; 32], u8),
+    Heap(Vec<u8>),
+}
+
+impl FromIterator<u8> for FieldBytes {
+    fn from_iter<I: IntoIterator<Item = u8>>(bytes: I) -> Self {
+        let (mut inline, mut n, mut bytes) = ([0u8; 32], 0usize, bytes.into_iter());
+        while let Some(byte) = bytes.next() {
+            if n == inline.len() {
+                let mut heap = inline.to_vec();
+                heap.push(byte);
+                heap.extend(bytes);
+                return FieldBytes::Heap(heap);
+            }
+            inline[n] = byte;
+            n += 1;
+        }
+        FieldBytes::Inline(inline, n as u8)
+    }
+}
+
+impl From<Vec<u8>> for FieldBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        FieldBytes::Heap(bytes)
+    }
+}
+
+impl std::ops::Deref for FieldBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            FieldBytes::Inline(bytes, n) => &bytes[..usize::from(*n)],
+            FieldBytes::Heap(bytes) => bytes,
+        }
+    }
+}
+
 /// The `PushField::ShadowStencilState` words of a draw under encoder state `state`: the front
 /// face's, then the back face's (`lower::fragment::face_word`). A state whose stencil write could
 /// depend on the depth test is refused as needing stencil export: the pass has a depth attachment,
@@ -3326,7 +3366,7 @@ fn instantiate(
             }
         ];
         for f in &st.fields {
-            let bytes: Vec<u8> = match f.field {
+            let bytes: FieldBytes = match f.field {
                 PushField::RootTableAddress
                 | PushField::ExecutionStatusAddress
                 | PushField::CaptureAddress
@@ -3355,27 +3395,27 @@ fn instantiate(
                     let Some(shadow) = &t.shadow_stencil else {
                         return Err(internal("a stencil state without its shader-side stencil"));
                     };
-                    shadow_stencil_words(shadow, state)?
+                    shadow_stencil_words(shadow, state)?.into()
                 }
                 PushField::ShaderTestsState => {
                     if t.shader_tests.is_none() {
                         return Err(internal("a depth state without its in-shader depth test"));
                     }
-                    shader_tests_words(state)
+                    shader_tests_words(state).into()
                 }
                 PushField::ShaderStencilState => {
                     if t.shader_tests.is_none() {
                         return Err(internal("a stencil state without its in-shader tests"));
                     }
-                    shader_stencil_words(state)
+                    shader_stencil_words(state).into()
                 }
                 PushField::DispatchRegion => match mesh.as_ref().and_then(|m| m.region(st.stage)) {
-                    Some(region) => region.to_vec(),
+                    Some(region) => region.into_iter().collect(),
                     None => return Err(internal("a dispatch region outside a mesh draw")),
                 },
-                PushField::ViewportCount => state.viewport_count.to_le_bytes().to_vec(),
+                PushField::ViewportCount => state.viewport_count.to_le_bytes().into_iter().collect(),
                 PushField::RenderTargetArrayLength => {
-                    state.render_target_array_length.to_le_bytes().to_vec()
+                    state.render_target_array_length.to_le_bytes().into_iter().collect()
                 }
                 // The identity where the state holds none: a plan states its variant, so
                 // instantiation under another shape asks for the other one first.
@@ -3396,7 +3436,7 @@ fn instantiate(
                     .viewport_compensation
                     .map_or(0, |c| c.mirrors)
                     .to_le_bytes()
-                    .to_vec(),
+                    .into_iter().collect(),
                 // No vertex's depth clamped where the state holds none.
                 PushField::VertexDepthClamp => state
                     .viewport_compensation
@@ -3411,11 +3451,11 @@ fn instantiate(
                     .iter()
                     .flat_map(|v| v.to_le_bytes())
                     .collect(),
-                PushField::StorageKeptChannels => t.storage_kept.to_le_bytes().to_vec(),
+                PushField::StorageKeptChannels => t.storage_kept.to_le_bytes().into_iter().collect(),
                 // The attachment's rule word, as link derived it from the pipeline's attachment.
                 PushField::ColorWriteRule(color) => {
                     match t.color_write_rules.iter().find(|(c, _)| *c == color) {
-                        Some((_, word)) => word.to_le_bytes().to_vec(),
+                        Some((_, word)) => word.to_le_bytes().into_iter().collect(),
                         None => return Err(internal("a color write rule link gave no word")),
                     }
                 }
@@ -3440,13 +3480,11 @@ fn instantiate(
                 | PushField::AmplificationViewportOffset => {
                     amplification_word(f.field, 0, &t.amplifications)?
                         .to_le_bytes()
-                        .to_vec()
+                        .into_iter().collect()
                 }
                 PushField::BaseVertexInstance => {
                     reads_base = true;
-                    let mut b = base[0].to_le_bytes().to_vec();
-                    b.extend_from_slice(&base[1].to_le_bytes());
-                    b
+                    base[0].to_le_bytes().into_iter().chain(base[1].to_le_bytes()).collect()
                 }
                 PushField::VertexBufferStride(layout) => {
                     let fixed = t.pulled_strides.iter().find(|(l, _)| *l == layout);
@@ -3471,10 +3509,11 @@ fn instantiate(
                             )))
                         }
                     };
-                    stride.to_le_bytes().to_vec()
+                    stride.to_le_bytes().into_iter().collect()
                 }
                 field => slot_field(field, &bound.residuals, &t.resources, state)
-                    .ok_or_else(|| internal(format!("a render push field {field:?}")))?,
+                    .ok_or_else(|| internal(format!("a render push field {field:?}")))?
+                    .into(),
             };
             put(&mut push, push_start, &mut table, f.loc, &bytes)?;
         }
