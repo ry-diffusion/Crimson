@@ -100,6 +100,7 @@ pub fn round_words_in(q: QuantizeForm, f: Form) -> u32 {
 /// [`converted`]'s alone, which is the same value where the device's conversion is Metal's.
 pub fn round(fb: &mut FunctionBuilder<'_>, f: Form, x: Value) -> BResult<Value> {
     match f.held {
+        Held::Float(FloatFmt::Half) if unrounded() => Ok(x),
         Held::Float(FloatFmt::Half) => {
             let wide = f.with(Held::Float(FloatFmt::F32));
             match fb.module().quantize_form() {
@@ -124,6 +125,19 @@ pub fn round(fb: &mut FunctionBuilder<'_>, f: Form, x: Value) -> BResult<Value> 
         }
         _ => Ok(x),
     }
+}
+
+/// Chlorophyll: `CHL_M2V_HALF_UNROUNDED=1` or a list of process names (m2v-env; read once) leaves a
+/// `half` result computed in `float` unrounded: more precise than Metal, never less, and no
+/// rounding instructions after every `half` operation (CoreAnimation's shaders are `half`
+/// throughout; the A630's GPU-bound App Library, 2026-11-25). The artifact cache does not key on
+/// it: remove the process's `m2v-cache` directory when it changes.
+fn unrounded() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let me = std::env::current_exe().ok().and_then(|p| Some(p.file_name()?.to_string_lossy().into_owned()));
+        std::env::var("CHL_M2V_HALF_UNROUNDED").is_ok_and(|v| v == "1" || me.is_some_and(|me| v.split(',').any(|n| n == me)))
+    })
 }
 
 /// How profile `p`'s modules round an `f32` to `half` ([`QuantizeForm`]): the device's
