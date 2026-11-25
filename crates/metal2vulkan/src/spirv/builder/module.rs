@@ -96,6 +96,8 @@ pub struct ModuleBuilder {
     /// Every result that carries a non-uniform descriptor element (`Inst::carries_non_uniform`):
     /// decorated `NonUniform`, and refused where it would reach an undecorated operand.
     pub(super) non_uniform: BTreeSet<Value>,
+    /// The values decorated `RelaxedPrecision` (`FunctionBuilder::relax`).
+    pub(super) relaxed: BTreeSet<Value>,
     /// The `Function` variables the emitter holds workgroup uniform by construction
     /// (`FunctionBuilder::note_uniform_var`). Nothing emitted depends on it: a record for the
     /// checks of `spirv::testing::barriers`, kept only where they build.
@@ -1262,6 +1264,7 @@ impl ModuleBuilder {
             volatile: self.volatile,
             enabling: self.enabling,
             non_uniform: self.non_uniform,
+            relaxed: self.relaxed,
             #[cfg(test)]
             uniform_vars: self.uniform_vars,
         })

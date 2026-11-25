@@ -1644,6 +1644,9 @@ impl Ser<'_> {
                     {
                         self.decorate(w, self.val(r)?, Decoration::NoContraction, &[])?;
                     }
+                    if m.relaxed.contains(&r) {
+                        self.decorate(w, self.val(r)?, Decoration::RelaxedPrecision, &[])?;
+                    }
                     // A value carrying a non-uniform descriptor element to its consumer
                     // (VUID-RuntimeSpirv-NonUniform-06274).
                     if m.non_uniform.contains(&r) && non_uniform.insert(self.val(r)?) {
