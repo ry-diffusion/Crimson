@@ -116,6 +116,36 @@ static void missing(const char *cls, const char *sel)
 }
 @end
 
+/*
+ * Crimson (/private/var/tmp/m2v-sbkeepicons, SpringBoard): every icon cell of a home-screen page counts as prefetched, so
+ * SpringBoard keeps all their images instead of dropping the off-screen ones and asking iconservicesagent for them again as
+ * the page scrolls. Each ask re-composites iOS 26's layered icon on the CPU (RenderBox's CoreGraphics backend), ~1 core
+ * during page swipes, and SpringBoard waits for the replies (2026-11-25 profiles).
+ */
+static void (*sb_set_cells)(id, SEL, long, id, id);
+static void sb_set_cells_all(id me, SEL cmd, long visibility, id visible, id prefetched)
+{
+	static NSIndexSet *all = [[NSIndexSet alloc] initWithIndexesInRange:NSMakeRange(0, 64)];
+	(void)prefetched;
+	sb_set_cells(me, cmd, visibility, visible, all);
+}
+static void sb_keep_icons(int tries)
+{
+	Class c = objc_getClass("SBIconListView");
+	SEL sel = sel_registerName("setCellVisibility:visibleGridCellIndexes:prefetchedGridCellIndexes:");
+	Method m = c ? class_getInstanceMethod(c, sel) : NULL;
+	if (!m) {
+		if (tries > 0)
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ sb_keep_icons(tries - 1); });
+		else
+			m2v_log("sbkeepicons: SBIconListView -setCellVisibility:... not found");
+		return;
+	}
+	m2v_log("sbkeepicons: hooking -[SBIconListView setCellVisibility:visibleGridCellIndexes:prefetchedGridCellIndexes:] (%s)",
+		method_getTypeEncoding(m));
+	sb_set_cells = (void (*)(id, SEL, long, id, id))method_setImplementation(m, (IMP)sb_set_cells_all);
+}
+
 extern "C" __attribute__((visibility("default"))) id m2v_create_device(void)
 {
 	static id device;
@@ -185,6 +215,8 @@ extern "C" __attribute__((visibility("default"))) id m2v_create_device(void)
 					}
 				}
 			});
+		if (strcmp(getprogname(), "SpringBoard") == 0 && access("/private/var/tmp/m2v-sbkeepicons", F_OK) == 0)
+			sb_keep_icons(15);
 		if (device && strcmp(getprogname(), "backboardd") != 0)
 			class_replaceMethod(object_getClass(device), sel_registerName("supportsExtendedXR10Formats"),
 					    imp_implementationWithBlock(^BOOL(id me) {
