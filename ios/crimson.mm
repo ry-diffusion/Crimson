@@ -223,16 +223,23 @@ extern "C" __attribute__((visibility("default"))) id m2v_create_device(void)
 		CFPreferencesSetAppValue(CFSTR("CAEnableFramebufferCompression"), kCFBooleanFalse, kCFPreferencesCurrentApplication);
 		CFPreferencesSetAppValue(CFSTR("CAEnableIOSurfaceCompression"), kCFBooleanFalse, kCFPreferencesCurrentApplication);
 		CFPreferencesSetAppValue(CFSTR("CAEnableDeepFramebuffer"), kCFBooleanFalse, kCFPreferencesCurrentApplication);
-		/* debugging: KEY=VALUE lines into this process's environment (TU_DEBUG, MESA_LOG_FILE, METAL2VULKAN_*) */
+		/* debugging: KEY=VALUE lines into this process's environment (TU_DEBUG, MESA_LOG_FILE, METAL2VULKAN_*);
+		 * PROCESS:KEY=VALUE only into the process named PROCESS (e.g. backboardd:MESA_GPU_TRACES=print) */
 		if (FILE *ef = fopen("/private/var/tmp/m2v-env", "r")) {
 			char line[256];
 			while (fgets(line, sizeof(line), ef)) {
 				line[strcspn(line, "\r\n")] = 0;
-				char *eq = strchr(line, '=');
+				char *eq = strchr(line, '='), *key = line, *colon = strchr(line, ':');
+				if (colon && eq && colon < eq) {
+					*colon = 0;
+					if (strcmp(line, getprogname()))
+						continue;
+					key = colon + 1;
+				}
 				if (line[0] != '#' && eq) {
 					*eq = 0;
-					setenv(line, eq + 1, 1);
-					m2v_log("env %s=%s", line, eq + 1);
+					setenv(key, eq + 1, 1);
+					m2v_log("env %s=%s", key, eq + 1);
 				}
 			}
 			fclose(ef);
