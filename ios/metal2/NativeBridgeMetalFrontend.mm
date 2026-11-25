@@ -762,6 +762,16 @@ static void flushSurfaces(NSMutableSet *surfaces,bool force=false) {
   gSurfaceFlushBytes+=it->second;gTimeSurfaceFlush.add(began);
  }
 }
+// Crimson: a format's linear pitch at a width never changes, and CoreAnimation asks for it for each image it wraps (with
+// texture layouts ~5 % of its display thread in swipes, 2026-11-25): the runtime is asked once per format and width
+static uint64_t chlLinearRow(NSUInteger format,NSUInteger width) {
+ static std::mutex lock;static std::unordered_map<uint64_t,uint64_t> rows;
+ const uint64_t key=(uint64_t)format<<32|(uint64_t)(uint32_t)width;
+ {std::lock_guard<std::mutex> g(lock);auto it=rows.find(key);if(it!=rows.end())return it->second;}
+ const uint64_t row=nmb_device_linear_bytes_per_row(gDevice,format,width);
+ if(row){std::lock_guard<std::mutex> g(lock);rows[key]=row;}
+ return row;
+}
 static NBTexture *chlMirror(NBBuffer *buffer,MTLTextureDescriptor *d,NSUInteger offset,NSUInteger row) {
  // Chlorophyll: a plain read-only 2D texture over a shadow (QuartzCore's ImageClientStorage: a client's image in its memory) is
  // an image of its own, uploaded here and again only when chlRefreshShadows sees the bytes change. As a texture over the buffer,
@@ -771,6 +781,12 @@ static NBTexture *chlMirror(NBBuffer *buffer,MTLTextureDescriptor *d,NSUInteger 
  if(buffer.shadowOf && d.textureType==MTLTextureType2D && d.mipmapLevelCount==1 && d.arrayLength<=1 && d.sampleCount<=1 &&
     !(d.usage&(MTLTextureUsageRenderTarget|MTLTextureUsageShaderWrite)) && chlTexelBytes(d.pixelFormat) && row>=d.width*chlTexelBytes(d.pixelFormat) &&
     offset+row*(d.height-1)+d.width*chlTexelBytes(d.pixelFormat)<=buffer.length) {
+  // Crimson: the same buffer wrapped again with the same layout gets the mirror it already has (read-only views of the same
+  // bytes): CoreAnimation re-wraps its image buffers often, and each new mirror was a GPU texture made on its display thread
+  @synchronized(buffer){
+   for(NBTexture *kept in buffer.mirrors)
+    if(kept.offset==offset && kept.rowBytes==row && kept.width==d.width && kept.height==d.height && kept.pixelFormat==d.pixelFormat)return kept;
+  }
   NBTexture *mirror=(NBTexture *)[(id<MTLDevice>)gDeviceObject newTextureWithDescriptor:d];
   if(mirror){
    mirror.buffer=buffer;mirror.offset=offset;mirror.rowBytes=row;
@@ -3258,7 +3274,7 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
   objc_setAssociatedObject(texture,&sweetMemoryOwnerKey,owner,OBJC_ASSOCIATION_RETAIN);
   return texture;
  }
- uint64_t row=nmb_device_linear_bytes_per_row(gDevice,d.pixelFormat,d.width);
+ uint64_t row=chlLinearRow(d.pixelFormat,d.width);
  if(row && row*d.height>length && length%d.height==0)row=length/d.height;
  if(!row || row*d.height>length){NBLOG(@"native-metal: newTextureWithBytesNoCopy: %lux%lu fmt %lu does not fit %lu bytes",(unsigned long)d.width,(unsigned long)d.height,(unsigned long)d.pixelFormat,(unsigned long)length);return nil;}
  id<MTLBuffer> buffer=[(id<MTLDevice>)self newBufferWithBytesNoCopy:bytes length:(length+page-1)&~(page-1) options:MTLResourceStorageModeShared deallocator:deallocator];
@@ -3274,7 +3290,7 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
  uint32_t bw=0,bh=0,bb=0;
  if(sweetBlock(d.pixelFormat,&bw,&bh,&bb))
   return [[SweetTextureLayout alloc] initWithBlocks:bw by:bh bytes:bb width:d.width height:d.height];
- const uint64_t row=nmb_device_linear_bytes_per_row(gDevice,d.pixelFormat,d.width);
+ const uint64_t row=chlLinearRow(d.pixelFormat,d.width);
  if(!row){NBLOG(@"native-metal: newTextureLayoutWithDescriptor: no linear pitch for fmt %lu: %@",(unsigned long)d.pixelFormat,lastError());return nil;}
  return [[SweetTextureLayout alloc] initWithRow:row height:d.height texel:sweetTexelBytes(d.pixelFormat)];
 }
@@ -3635,7 +3651,7 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
  NBBinaryArchive *archive=[NBBinaryArchive new];archive.handle=handle;if(error)*error=nil;return (id<MTLBinaryArchive>)archive;
 }
 - (NSUInteger)requiredLinearTextureBytesPerRowForDescriptor:(MTLTextureDescriptor *)d {
- const uint64_t row=nmb_device_linear_bytes_per_row(gDevice,d.pixelFormat,d.width);
+ const uint64_t row=chlLinearRow(d.pixelFormat,d.width);
  if(!row)NBLOG(@"native-metal: requiredLinearTextureBytesPerRow: %@",lastError());
  return row;
 }
