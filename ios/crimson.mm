@@ -32,6 +32,12 @@ extern "C" void sm2_logs(const char *s)
 	char buf[700];
 	int n = snprintf(buf, sizeof(buf), "M2V[%d %s]: %s\n", getpid(), getprogname(), s);
 	write(fd, buf, n < (int)sizeof(buf) ? (size_t)n : sizeof(buf) - 1);
+	/* the log is shared by every process for the whole boot: at 50 MB, with old backups, it filled the data partition and
+	 * mobile processes could no longer create files (SpringBoard died at unlock, 2026-11-25). Past 32 MB it starts over. */
+	static unsigned lines;
+	struct stat st;
+	if (++lines % 4096 == 0 && fstat(fd, &st) == 0 && st.st_size > (32 << 20))
+		ftruncate(fd, 0);
 }
 
 static void m2v_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
