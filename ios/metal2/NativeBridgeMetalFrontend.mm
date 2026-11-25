@@ -1546,6 +1546,8 @@ static std::atomic<uint32_t> gComputeSamples{0};
 @end
 
 @interface NBRenderEncoder : NBEncoder {
+ @public
+ __unsafe_unretained id _lastIndexBuffer;   // identity only: the owners set keeps it alive
 @public
  // 0242: cull mode, winding and fill mode as plain fields (were associated NSNumbers, set on nearly every draw by
  // Unity) and sent to the runtime only when one changes. Metal's defaults: none, clockwise, fill.
@@ -1719,8 +1721,13 @@ static void traceBigTextureDraw(id encoder,const char *kind,NSUInteger count,NSU
 }
 - (void)drawIndexedPrimitives:(MTLPrimitiveType)t indexCount:(NSUInteger)n indexType:(MTLIndexType)k indexBuffer:(id<MTLBuffer>)b indexBufferOffset:(NSUInteger)o
                 instanceCount:(NSUInteger)i baseVertex:(NSInteger)v baseInstance:(NSUInteger)bi {
- if(![(id)b isKindOfClass:[NBBuffer class]]){[self.commandBuffer refuse:@"foreign index buffer"];return;}
- [self.commandBuffer.resourceOwners addObject:b];
+ // Crimson: CoreAnimation draws nearly every quad from one index buffer: checked and added to the owners once per encoder
+ // (the set insert and two property reads per draw were on its display thread)
+ if(b!=_lastIndexBuffer){
+  if(![(id)b isKindOfClass:[NBBuffer class]]){[self.commandBuffer refuse:@"foreign index buffer"];return;}
+  [self.commandBuffer.resourceOwners addObject:b];
+  _lastIndexBuffer=b;
+ }
  gDraws++;self.commandBuffer->encodedWork.draws++;
  if(traceOn())chlLogDraw(self,self.commandBuffer->encodedWork.draws-1,n,i);
  if(chlSkip(true,self.commandBuffer->encodedWork.draws-1))return;
