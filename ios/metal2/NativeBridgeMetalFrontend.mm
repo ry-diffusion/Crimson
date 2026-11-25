@@ -255,6 +255,11 @@ static id chlForward(id self,SEL sel) {
 - (id<MTLDevice>)device {return gDeviceObject;}
 // Metal SPI (Metal Performance Shaders asks every encoder and command buffer): an identity for its traces.
 - (uint64_t)globalTraceObjectID {return (uint64_t)(uintptr_t)self;}
+// Crimson: Metal SPI CoreAnimation sends to every buffer, texture and command buffer (who to bill the memory and GPU time to):
+// nothing to do here, answered directly; through forwarding each was a missing-selector lookup on CA's thread (backboardd:
+// "MISSING NBBuffer -setResponsibleProcess:", "NBTexture -setResponsibleProcess:", "NBCommandBuffer -setResponsibleTaskIDs:count:")
+- (void)setResponsibleProcess:(pid_t)pid {(void)pid;}
+- (void)setResponsibleTaskIDs:(const void *)ids count:(NSUInteger)count {(void)ids;(void)count;}
 - (id)forwardingTargetForSelector:(SEL)sel {return chlForward(self,sel);}
 - (void)doesNotRecognizeSelector:(SEL)selector {
  if(gMissing)gMissing(class_getName(object_getClass(self)),sel_getName(selector));
