@@ -1049,6 +1049,7 @@ static void notified(void *context,uint64_t value) {
 @property(nonatomic) uint32_t commitIndex;
 @property(nonatomic,strong) NSMutableArray *scheduledHandlers,*completedHandlers;
 @property(nonatomic,strong) NSMutableArray<id<MTLDrawable>> *presentDrawables;
+@property(nonatomic,strong) id<MTLTexture> chlHudTarget;   // the screen this buffer draws (m2v-hud)
 @property(nonatomic,strong) NSArray *priorWorkBuffers;
 @property(nonatomic,strong) NSMutableSet *surfaces;
 @property(nonatomic,strong) NSMutableSet *rotatedShadows;   // 0196: landscape stand-ins rendered into (rotatedSurfaceTexture)
@@ -2103,6 +2104,10 @@ static void scheduled(void *context);
   encoder=[self encoder:[NBRenderEncoder new] handle:self.committed?nullptr:nmb_render_encoder_new(_handle,&pass) what:@"renderCommandEncoder"];
  }
  if([encoder isKindOfClass:[NBRenderEncoder class]])((NBRenderEncoder *)encoder).drawableTarget=drawableTarget;
+ if(chlHudOn()){   // the screen: the widest IOSurface target the frame draws
+  id<MTLTexture> t=d.colorAttachments[0].texture;
+  if([(id)t isKindOfClass:[NBTexture class]] && [(NBTexture *)t surface] && t.width>=720 && t.width>=self.chlHudTarget.width)self.chlHudTarget=t;
+ }
  if(chlDumpPassesOn() && [encoder isKindOfClass:[NBRenderEncoder class]] && d.colorAttachments[0].texture)
   objc_setAssociatedObject(encoder,"chlPassTarget",d.colorAttachments[0].texture,OBJC_ASSOCIATION_RETAIN);
  if(chlDumpOn())for(NSUInteger i=0;i<8;i++){
@@ -2286,6 +2291,49 @@ static void scheduled(void *context);
  dispatch_queue_t queue=_queue.completionQueue;
  if(queue)dispatch_async(queue,run);else run();
 }
+// Crimson: the on-screen performance HUD (/private/var/tmp/m2v-hud, backboardd): the branding and two lines of the fps meter's last second, drawn
+// on the CPU with a 5x7 font and blitted into the top-left corner of each frame's screen target at commit (no shader, one blit a
+// frame). FPS = rendering commits a second; C-D = commit to GPU done; GPU = GPU time a frame; DRAW = encode-worker time a draw;
+// D/F = draws a frame; SUB = commit to submitted.
+static bool chlHudOn() {static const bool on=access("/private/var/tmp/m2v-hud",F_OK)==0 && strcmp(getprogname(),"backboardd")==0;return on;}
+static char gChlHud[2][48]={"FPS --","WAITING"};static std::mutex gChlHudLock;
+static const char *chlHudGlyph(char c) {   // 7 rows of 5 bits, MSB left
+ static const struct {char c;uint8_t r[7];} f[]={
+  {'0',{14,17,19,21,25,17,14}},{'1',{4,12,4,4,4,4,14}},{'2',{14,17,1,2,4,8,31}},{'3',{31,2,4,2,1,17,14}},{'4',{2,6,10,18,31,2,2}},
+  {'5',{31,16,30,1,1,17,14}},{'6',{6,8,16,30,17,17,14}},{'7',{31,1,2,4,8,8,8}},{'8',{14,17,17,14,17,17,14}},{'9',{14,17,17,15,1,2,12}},
+  {'A',{14,17,17,31,17,17,17}},{'B',{30,17,17,30,17,17,30}},{'C',{14,17,16,16,16,17,14}},{'D',{28,18,17,17,17,18,28}},
+  {'E',{31,16,16,30,16,16,31}},{'F',{31,16,16,30,16,16,16}},{'J',{7,2,2,2,2,18,12}},{'O',{14,17,17,17,17,17,14}},{'G',{14,17,16,23,17,17,15}},{'I',{14,4,4,4,4,4,14}},{'M',{17,27,21,21,17,17,17}},{'N',{17,25,21,19,17,17,17}},
+  {'P',{30,17,17,30,16,16,16}},{'R',{30,17,17,30,20,18,17}},{'S',{15,16,16,14,1,1,30}},{'T',{31,4,4,4,4,4,4}},{'U',{17,17,17,17,17,17,14}},
+  {'W',{17,17,17,21,21,21,10}},{'.',{0,0,0,0,0,12,12}},{':',{0,12,12,0,12,12,0}},{'-',{0,0,0,31,0,0,0}},{'/',{0,1,2,4,8,16,0}},
+  {'%',{24,25,2,4,8,19,3}}};
+ for(const auto &g:f)if(g.c==c)return (const char *)g.r;
+ return nullptr;
+}
+enum {CHL_HUD_W=600,CHL_HUD_H=86,CHL_HUD_SCALE=3};
+static void chlHudRender(uint32_t *px) {   // BGRA8: the branding in crimson, the numbers in white, on dark grey
+ for(int i=0;i<CHL_HUD_W*CHL_HUD_H;i++)px[i]=0xff202020u;
+ char text[3][48]={"CRIMSON - BERGAMOTA PROJECT"};
+ {std::lock_guard<std::mutex> l(gChlHudLock);memcpy(text[1],gChlHud,sizeof gChlHud);}
+ for(int line=0;line<3;line++)for(int i=0;text[line][i];i++){
+  const uint32_t ink=line?0xffffffffu:0xffdc143cu;   // crimson #DC143C
+  const uint8_t *g=(const uint8_t *)chlHudGlyph(text[line][i]);
+  const int x0=6+i*6*CHL_HUD_SCALE,y0=4+line*9*CHL_HUD_SCALE;
+  if(!g || x0+5*CHL_HUD_SCALE>CHL_HUD_W)continue;
+  for(int r=0;r<7;r++)for(int c=0;c<5;c++)if(g[r]>>(4-c)&1)
+   for(int dy=0;dy<CHL_HUD_SCALE;dy++)for(int dx=0;dx<CHL_HUD_SCALE;dx++)px[(y0+r*CHL_HUD_SCALE+dy)*CHL_HUD_W+x0+c*CHL_HUD_SCALE+dx]=ink;
+ }
+}
+static void chlDrawHud(id<MTLCommandBuffer> cb,id<MTLTexture> target) {
+ static id<MTLBuffer> ring[4];static unsigned next;   // CHL_MAX_FLIGHT frames can still read earlier ones
+ if(!ring[0])for(auto &b:ring)b=[gDeviceObject newBufferWithLength:CHL_HUD_W*CHL_HUD_H*4 options:MTLResourceStorageModeShared];
+ id<MTLBuffer> b=ring[next++%4];
+ if(!b || target.width<CHL_HUD_W+40 || target.height<CHL_HUD_H+140)return;
+ chlHudRender((uint32_t *)b.contents);
+ id<MTLBlitCommandEncoder> e=[cb blitCommandEncoder];
+ [e copyFromBuffer:b sourceOffset:0 sourceBytesPerRow:CHL_HUD_W*4 sourceBytesPerImage:CHL_HUD_W*CHL_HUD_H*4 sourceSize:MTLSizeMake(CHL_HUD_W,CHL_HUD_H,1)
+         toTexture:target destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(40,110,0)];   // below the status bar
+ [e endEncoding];
+}
 // Chlorophyll: CHL_M2V_MIN_FRAME_MS_<process name>=N (m2v-env) spaces that process's frames (command buffers with render passes) at
 // least N ms apart by waiting in commit. The GPU has one ring: MercuryPoster's ~0.4 s frames held backboardd's 20 ms ones behind
 // them, so lock/unlock ran at ~2 fps; paced, the wallpaper animates slower and the rest of the UI keeps the GPU.
@@ -2328,6 +2376,7 @@ static void chlPaceFrame(bool frame) {
    if(n<=3 || n%600==0)NBLOG(@"native-metal: rotated framebuffer: turn %llu into surface %#x",(unsigned long long)n,IOSurfaceGetID(portrait.surface));
   }
  }
+ if(chlHudOn() && self.chlHudTarget && !self.encodeFailure)chlDrawHud((id<MTLCommandBuffer>)self,self.chlHudTarget);
  self.committed=YES;
  self.committedUs=nowUs();
  dispatch_group_enter(_handlers);
@@ -3704,7 +3753,7 @@ extern "C" id native_bridge_metal_open(const char *loader,const char *cache,uint
  if(cache){gJournalPath=std::string(cache)+"/pipelines.log";gJournalBegan=nowUs();}
  // Chlorophyll: the fps meter, one line a second with frames in it: rendering commits, frame intervals (<=17 ms = 60 fps),
  // draws per frame, and commit-to-completion of the second's command buffers
- if(access("/private/var/tmp/m2v-fps",F_OK)==0) {
+ if(access("/private/var/tmp/m2v-fps",F_OK)==0 || chlHudOn()) {
   dispatch_source_t timer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_global_queue(QOS_CLASS_UTILITY,0));
   dispatch_source_set_timer(timer,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),NSEC_PER_SEC,50*NSEC_PER_MSEC);
   __block uint32_t seen=gChlFrames.load();
@@ -3736,11 +3785,19 @@ extern "C" id native_bridge_metal_open(const char *loader,const char *cache,uint
    static uint64_t lastSets[2];uint64_t sets[2]={};nmb_set_zero_stats(sets);
    static mach_timebase_info_data_t tb;if(!tb.denom)mach_timebase_info(&tb);
    unsigned long long wms[4];for(int k=0;k<4;k++)wms[k]=gChlWorkTicks[k].exchange(0)*tb.numer/tb.denom/1000000;
+   const unsigned long long lagUs=gChlSubmitLagUs.exchange(0)/std::max<uint64_t>(1,gChlSubmitLagN.exchange(0));
+   if(chlHudOn()){
+    std::lock_guard<std::mutex> l(gChlHudLock);
+    const unsigned long long cd=dc?dt/dc:0;
+    snprintf(gChlHud[0],sizeof gChlHud[0],"FPS %u  C-D %llu.%lluMS  GPU %llu.%lluMS",frames,cd/1000,cd/100%10,
+             frames?gpuMs/frames:0ull,frames?gpuMs*10/frames%10:0ull);
+    snprintf(gChlHud[1],sizeof gChlHud[1],"DRAW %lluUS  D/F %u  SUB %llu.%lluMS",draws?wms[0]*1000/draws:0ull,frames?draws/frames:0,lagUs/1000,lagUs/100%10);
+   }
    NBLOG(@"fps: %u frames/s, intervals <=17ms %u, <=25 %u, <=34 %u, <=100 %u, longer %u (max %llu ms); draws/frame %u (max %u); commit-to-done %llu us mean over %llu; shadow copies %llu KB; passes %llu; vkpipelines %llu (%llu ms); frame age %llu.%llu ms, in commit %llu.%llu ms; gpu %llu ms (max %llu); worker ms draw %llu end %llu set %llu commit %llu, pipeline sets %llu, early commits %llu; commit-to-submit %llu us; set 0 reused %llu of %llu draws; batches cpu %llu of wall %llu ms, started on cpu0..7 %llu %llu %llu %llu %llu %llu %llu %llu",
          frames,bins[0],bins[1],bins[2],bins[3],bins[4],(unsigned long long)(longest/1000),frames?draws/frames:0,maxDraws,
          (unsigned long long)(dc?dt/dc:0),(unsigned long long)dc,(unsigned long long)shadowKb,(unsigned long long)passes,(unsigned long long)pipes,(unsigned long long)pipeMs,
          (unsigned long long)(ageMs10/10),(unsigned long long)(ageMs10%10),(unsigned long long)(commitMs10/10),(unsigned long long)(commitMs10%10),(unsigned long long)gpuMs,(unsigned long long)gpuMax,wms[0],wms[1],wms[2],wms[3],(unsigned long long)gChlPipeSets.exchange(0),(unsigned long long)gChlCuts.exchange(0),
-         (unsigned long long)(gChlSubmitLagUs.exchange(0)/std::max<uint64_t>(1,gChlSubmitLagN.exchange(0))),
+         lagUs,
          (unsigned long long)(sets[1]-lastSets[1]),(unsigned long long)(sets[0]-lastSets[0]),
          (unsigned long long)(gChlBatchCpuNs.exchange(0)/1000000),(unsigned long long)(gChlBatchWall.exchange(0)*tb.numer/tb.denom/1000000),
          (unsigned long long)gChlBatchOn[0].exchange(0),(unsigned long long)gChlBatchOn[1].exchange(0),(unsigned long long)gChlBatchOn[2].exchange(0),(unsigned long long)gChlBatchOn[3].exchange(0),
