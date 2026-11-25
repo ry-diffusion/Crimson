@@ -771,19 +771,16 @@ static NBTexture *chlMirror(NBBuffer *buffer,MTLTextureDescriptor *d,NSUInteger 
  if(buffer.shadowOf && d.textureType==MTLTextureType2D && d.mipmapLevelCount==1 && d.arrayLength<=1 && d.sampleCount<=1 &&
     !(d.usage&(MTLTextureUsageRenderTarget|MTLTextureUsageShaderWrite)) && chlTexelBytes(d.pixelFormat) && row>=d.width*chlTexelBytes(d.pixelFormat) &&
     offset+row*(d.height-1)+d.width*chlTexelBytes(d.pixelFormat)<=buffer.length) {
-  // the caller's bytes through the kernel, as chlCheckShadow reads them (they can be unmapped under us)
-  const vm_size_t length=(vm_size_t)buffer.length;
-  uint8_t *copy=(uint8_t *)malloc(length);vm_size_t got=0;
-  if(!copy || vm_read_overwrite(mach_task_self(),(vm_address_t)buffer.shadowOf,length,(vm_address_t)copy,&got)!=KERN_SUCCESS || got!=length){
-   free(copy);
-   return nil;   // a plain texture over the buffer, as before
-  }
   NBTexture *mirror=(NBTexture *)[(id<MTLDevice>)gDeviceObject newTextureWithDescriptor:d];
-  if(!mirror)free(copy);
   if(mirror){
    mirror.buffer=buffer;mirror.offset=offset;mirror.rowBytes=row;
-   chlUploadMirror(copy,mirror);free(copy);
    @synchronized(buffer){if(!buffer.mirrors)buffer.mirrors=[NSHashTable weakObjectsHashTable];[buffer.mirrors addObject:mirror];}
+   // Crimson: the first upload is the next shadow check's, at the commit of the first command buffer that binds the mirror
+   // (on the encode worker with async commits, before its submit, so before any draw of it runs): the check value cleared,
+   // that check sees the bytes as changed and uploads every mirror. Here, on CoreAnimation's thread, the kernel copy and the
+   // upload were ~6 % of its time in frames that missed the refresh (2026-11-25 timeline). A client whose memory is gone by
+   // then: the check finds it ("its memory is gone") and the mirror stays as made.
+   buffer.shadowHash=0;
    static std::atomic<int> said{0};
    if(said++<12)NBLOG(@"chl: mirror %lux%lu fmt %lu row %lu over a %lu-byte shadow",(unsigned long)d.width,(unsigned long)d.height,(unsigned long)d.pixelFormat,(unsigned long)row,(unsigned long)buffer.length);
    return mirror;
@@ -1940,7 +1937,21 @@ static void scheduled(void *context);
  }
  return self;
 }
-- (void)dealloc {nmb_command_buffer_release(_handle);for(NmbCommandBuffer *h:chlEarly)nmb_command_buffer_release(h);delete chlTrace;}
+// Crimson: the runtime buffers (their pools, arenas and tracking) and the sets of every resource the frame used are let go on
+// a background queue: the last release of a command buffer is often CoreAnimation's, on its display thread, and once the
+// cuttable encoders stopped leaking their buffers (endEncoding above) that release cost the HUD ~3 fps
+- (void)dealloc {
+ static dispatch_queue_t later=dispatch_queue_create("chl.release",dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,QOS_CLASS_UTILITY,0));
+ NmbCommandBuffer *main=_handle;std::vector<NmbCommandBuffer *> *early=new std::vector<NmbCommandBuffer *>(std::move(chlEarly));
+ std::vector<std::array<uint32_t,4>> *trace=chlTrace;
+ NSMutableSet *owners=_resourceOwners;NSArray *earlyOwners=chlEarlyOwners;
+ dispatch_async(later,^{
+  nmb_command_buffer_release(main);
+  for(NmbCommandBuffer *h:*early)nmb_command_buffer_release(h);
+  delete early;delete trace;
+  (void)owners;(void)earlyOwners;   // released here, with the block
+ });
+}
 - (id<MTLCommandQueue>)commandQueue {return (id<MTLCommandQueue>)_queue;}
 - (BOOL)retainedReferences {return YES;}
 // Protected content is not supported (the runtime's AppleOnlyCall::SetProtectionOptions takes Metal's default only): any other option fails
