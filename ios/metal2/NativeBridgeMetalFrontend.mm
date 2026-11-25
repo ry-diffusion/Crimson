@@ -490,13 +490,19 @@ static void chlCheckShadow(NBBuffer *b,uint64_t now) {
  // such memory while backboardd still holds the buffer, and a direct read after a region check crashed backboardd when the
  // free came in between (EXC_BAD_ACCESS in the mirror upload, 2026-11-24). The check runs every 4 ms at most (50 ms, off the
  // commit path, for buffers over 1 MB), so the kernel copy no longer costs what it did at every commit.
- uint8_t *copy=(uint8_t *)malloc(length);
+ // one scratch per thread, grown to the largest shadow it checked: a malloc of each shadow's size (past ~128 KB an mmap,
+ // fresh pages the kernel copy faulted in, then a munmap) was most of the re-checks' ~6 % of a core in backboardd (2026-11-25)
+ // (up to 1 MB: GCD runs the checks on any pool thread, and an 11 MB wallpaper's scratch on each would stay; those, checked once
+ // a second, take a copy of their own)
+ thread_local std::vector<uint8_t> scratch;
+ std::vector<uint8_t> big;
+ std::vector<uint8_t> &buf=length<=(1u<<20)?scratch:big;
+ if(buf.size()<length)buf.resize(length);
+ uint8_t *copy=buf.data();
  vm_size_t got=0;
- kern_return_t kr=copy?vm_read_overwrite(mach_task_self(),(vm_address_t)src,length,(vm_address_t)copy,&got):KERN_RESOURCE_SHORTAGE;
+ kern_return_t kr=vm_read_overwrite(mach_task_self(),(vm_address_t)src,length,(vm_address_t)copy,&got);
  if(kr==KERN_SUCCESS && got!=length)kr=KERN_INVALID_ADDRESS;
  if(kr!=KERN_SUCCESS){
-  free(copy);
-  if(kr==KERN_RESOURCE_SHORTAGE)return;
   {std::lock_guard<std::mutex> lock(gShadowLock);[gShadows removeObject:b];}
   b.shadowOf=nullptr;   // contents falls back to the GPU memory
   static std::atomic<int> said{0};
@@ -510,7 +516,6 @@ static void chlCheckShadow(NBBuffer *b,uint64_t now) {
   NSArray *mirrors;@synchronized(b){mirrors=b.mirrors.allObjects;}
   for(id t in mirrors)chlUploadMirror(copy,t);
  }
- free(copy);
 }
 static void chlRefreshShadows(id<NSFastEnumeration> owners) {
  NSMutableSet<NBBuffer *> *live=[NSMutableSet set];
