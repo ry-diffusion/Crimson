@@ -281,6 +281,7 @@ pub use queue::CommandQueue;
 pub use rate_map::{RasterizationRateMap, RateMapProblem};
 pub use rate_mapped_pass::RegionRefusal;
 pub use rebind::RebindProblem;
+pub use live_bind::SHAPES;
 pub use render::{DrawProblem, RenderCommandEncoder, ResolveTarget, SET_ZERO_DRAWS, SET_ZERO_REUSED};
 pub use render_pass::{
     Attachment, RenderPassColorAttachmentDescriptor, RenderPassDepthAttachmentDescriptor,

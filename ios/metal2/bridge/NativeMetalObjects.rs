@@ -250,17 +250,21 @@ pub extern "C" fn nmb_device_work_stats(device: *const NmbDevice, out: *mut u64)
     })
 }
 
-/// Render draws so far and those whose set 0 was the previous draw's, into the caller's two words.
+/// Render draws so far, those whose set 0 was the previous draw's, and draws whose bind shape was
+/// kept, found or made, into the caller's five words.
 #[unsafe(no_mangle)]
 pub extern "C" fn nmb_set_zero_stats(out: *mut u64) {
     use std::sync::atomic::Ordering::Relaxed;
     if out.is_null() {
         return;
     }
-    // SAFETY: the header's two words.
-    let out = unsafe { std::slice::from_raw_parts_mut(out, 2) };
+    // SAFETY: the header's five words.
+    let out = unsafe { std::slice::from_raw_parts_mut(out, 5) };
     out[0] = metal2vulkan_runtime::SET_ZERO_DRAWS.load(Relaxed);
     out[1] = metal2vulkan_runtime::SET_ZERO_REUSED.load(Relaxed);
+    for (i, n) in metal2vulkan_runtime::SHAPES.iter().enumerate() {
+        out[2 + i] = n.load(Relaxed);
+    }
 }
 
 /// Separate artifact and driver-record counters, mirroring the C ABI.

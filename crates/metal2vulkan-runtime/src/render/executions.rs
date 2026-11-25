@@ -1577,7 +1577,7 @@ impl RenderCommandEncoder {
         let settings = self.draw_settings(CALL, state, assembly, false)?;
         let mut argument_samplers = self.core.device().argument_samplers();
         let function_tables = state.function_tables();
-        let live = Arc::clone(&self.live);
+        let live = self.live_for(state);
         let settled = self.settle_draw(
             &mut lock(&live),
             (state, &settings),
@@ -2091,7 +2091,7 @@ impl RenderExecution {
             // An execution's draws restart at the all-ones index whatever the encoder's call
             // (EV RFX-probe5-m4's `icb_*`).
             restart: None,
-            live: Arc::default(),
+            lives: Default::default(),
             log: None,
             quiet_bound_values: None,
             bind_memo: crate::binding::BindMemo::default(),

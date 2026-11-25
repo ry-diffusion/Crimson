@@ -20,7 +20,8 @@ int
 main(void)
 {
    @autoreleasepool {
-      void *h = dlopen("/usr/local/lib/bgmtl/libcrimson.dylib", RTLD_NOW);
+      const char *lib = getenv("CRIMSON_LIB");   // another build of libcrimson to A/B in the same boot
+      void *h = dlopen(lib ? lib : "/usr/local/lib/bgmtl/libcrimson.dylib", RTLD_NOW);
       if (!h) { printf("dlopen: %s\n", dlerror()); return 1; }
       id (*create)(void) = (id(*)(void))dlsym(h, "m2v_create_device");
       id<MTLDevice> dev = create ? create() : nil;

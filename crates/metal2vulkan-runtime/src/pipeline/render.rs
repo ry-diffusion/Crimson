@@ -1818,7 +1818,11 @@ impl GraphicsState {
             let mut kept = lock(&self.0.settled);
             let found = kept
                 .iter()
-                .position(|(kept, last)| *kept == forms && last.shape == *shape);
+                // the same Arc first: a kept shape is handed back as the Arc it was settled with,
+                // and comparing two whole shapes was most of a CoreAnimation draw's settle
+                .position(|(kept, last)| {
+                    *kept == forms && (Arc::ptr_eq(&last.shape, shape) || last.shape == *shape)
+                });
             if let Some(entry) = found.and_then(|at| kept.remove(at)) {
                 let last = entry.1.clone();
                 kept.push_front(entry);

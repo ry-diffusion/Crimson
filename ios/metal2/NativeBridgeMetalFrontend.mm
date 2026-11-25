@@ -3782,7 +3782,7 @@ extern "C" id native_bridge_metal_open(const char *loader,const char *cache,uint
    const uint64_t timed=gChlTimedFrames.load()-lastTimed,ageMs10=timed?(gChlAgeUs.load()-lastAge)/timed/100:0,commitMs10=timed?(gChlCommitUs.load()-lastCommit)/timed/100:0;
    lastAge=gChlAgeUs.load();lastCommit=gChlCommitUs.load();lastTimed=gChlTimedFrames.load();
    static uint64_t lastGpu=0;const uint64_t gpuNow=gChlGpuUs.load(),gpuMs=(gpuNow-lastGpu)/1000,gpuMax=gChlGpuMaxUs.exchange(0)/1000;lastGpu=gpuNow;
-   static uint64_t lastSets[2];uint64_t sets[2]={};nmb_set_zero_stats(sets);
+   static uint64_t lastSets[5];uint64_t sets[5]={};nmb_set_zero_stats(sets);
    static mach_timebase_info_data_t tb;if(!tb.denom)mach_timebase_info(&tb);
    unsigned long long wms[4];for(int k=0;k<4;k++)wms[k]=gChlWorkTicks[k].exchange(0)*tb.numer/tb.denom/1000000;
    const unsigned long long lagUs=gChlSubmitLagUs.exchange(0)/std::max<uint64_t>(1,gChlSubmitLagN.exchange(0));
@@ -3793,16 +3793,16 @@ extern "C" id native_bridge_metal_open(const char *loader,const char *cache,uint
              frames?gpuMs/frames:0ull,frames?gpuMs*10/frames%10:0ull);
     snprintf(gChlHud[1],sizeof gChlHud[1],"DRAW %lluUS  D/F %u  SUB %llu.%lluMS",draws?wms[0]*1000/draws:0ull,frames?draws/frames:0,lagUs/1000,lagUs/100%10);
    }
-   NBLOG(@"fps: %u frames/s, intervals <=17ms %u, <=25 %u, <=34 %u, <=100 %u, longer %u (max %llu ms); draws/frame %u (max %u); commit-to-done %llu us mean over %llu; shadow copies %llu KB; passes %llu; vkpipelines %llu (%llu ms); frame age %llu.%llu ms, in commit %llu.%llu ms; gpu %llu ms (max %llu); worker ms draw %llu end %llu set %llu commit %llu, pipeline sets %llu, early commits %llu; commit-to-submit %llu us; set 0 reused %llu of %llu draws; batches cpu %llu of wall %llu ms, started on cpu0..7 %llu %llu %llu %llu %llu %llu %llu %llu",
+   NBLOG(@"fps: %u frames/s, intervals <=17ms %u, <=25 %u, <=34 %u, <=100 %u, longer %u (max %llu ms); draws/frame %u (max %u); commit-to-done %llu us mean over %llu; shadow copies %llu KB; passes %llu; vkpipelines %llu (%llu ms); frame age %llu.%llu ms, in commit %llu.%llu ms; gpu %llu ms (max %llu); worker ms draw %llu end %llu set %llu commit %llu, pipeline sets %llu, early commits %llu; commit-to-submit %llu us; set 0 reused %llu of %llu draws, shape kept %llu found %llu made %llu; batches cpu %llu of wall %llu ms, started on cpu0..7 %llu %llu %llu %llu %llu %llu %llu %llu",
          frames,bins[0],bins[1],bins[2],bins[3],bins[4],(unsigned long long)(longest/1000),frames?draws/frames:0,maxDraws,
          (unsigned long long)(dc?dt/dc:0),(unsigned long long)dc,(unsigned long long)shadowKb,(unsigned long long)passes,(unsigned long long)pipes,(unsigned long long)pipeMs,
          (unsigned long long)(ageMs10/10),(unsigned long long)(ageMs10%10),(unsigned long long)(commitMs10/10),(unsigned long long)(commitMs10%10),(unsigned long long)gpuMs,(unsigned long long)gpuMax,wms[0],wms[1],wms[2],wms[3],(unsigned long long)gChlPipeSets.exchange(0),(unsigned long long)gChlCuts.exchange(0),
          lagUs,
-         (unsigned long long)(sets[1]-lastSets[1]),(unsigned long long)(sets[0]-lastSets[0]),
+         (unsigned long long)(sets[1]-lastSets[1]),(unsigned long long)(sets[0]-lastSets[0]),(unsigned long long)(sets[2]-lastSets[2]),(unsigned long long)(sets[3]-lastSets[3]),(unsigned long long)(sets[4]-lastSets[4]),
          (unsigned long long)(gChlBatchCpuNs.exchange(0)/1000000),(unsigned long long)(gChlBatchWall.exchange(0)*tb.numer/tb.denom/1000000),
          (unsigned long long)gChlBatchOn[0].exchange(0),(unsigned long long)gChlBatchOn[1].exchange(0),(unsigned long long)gChlBatchOn[2].exchange(0),(unsigned long long)gChlBatchOn[3].exchange(0),
          (unsigned long long)gChlBatchOn[4].exchange(0),(unsigned long long)gChlBatchOn[5].exchange(0),(unsigned long long)gChlBatchOn[6].exchange(0),(unsigned long long)gChlBatchOn[7].exchange(0));
-   lastSets[0]=sets[0];lastSets[1]=sets[1];
+   memcpy(lastSets,sets,sizeof sets);
   });
   dispatch_resume(timer);
   static dispatch_source_t keep;keep=timer;

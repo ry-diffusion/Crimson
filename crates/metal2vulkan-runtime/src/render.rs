@@ -1110,10 +1110,12 @@ pub struct RenderCommandEncoder {
     /// strips restart (`render/restart.rs`); `None` before any, where they restart at the index
     /// type's all-ones index.
     restart: Option<u64>,
-    /// The bind state the encoder's last draw bound, with its shape, which each draw brings to
-    /// its own in place (`live_bind.rs`). Shared only so that a draw holds it while it calls the
-    /// encoder's other methods.
-    live: Arc<Mutex<LiveBind>>,
+    /// The bind state the encoder's last draw of each drawing state bound, with its shape, which
+    /// each draw brings to its own in place (`live_bind.rs`), the latest first, at most
+    /// [`LIVE_BINDS`]: one kept state for every pipeline lost its shape at each switch (another
+    /// pipeline reads other slots), and CoreAnimation alternates about ten. Each `Arc` is shared
+    /// only so that a draw holds it while it calls the encoder's other methods.
+    lives: Mutex<Vec<(DrawingState, Arc<Mutex<LiveBind>>)>>,
     /// Its pass's descriptor and its calls so far, where the device had a buffer over host pages
     /// as it opened (`render/replay.rs`): `None` where it logs nothing, as when it is encoded
     /// again.
@@ -1129,6 +1131,14 @@ pub struct RenderCommandEncoder {
     kept_samplers: super::sampler::KeptSamplers,
     /// What its last draw retained of its own ([`LastRetained`]).
     last_retained: LastRetained,
+}
+
+/// The drawing states whose bind states a render encoder keeps (`RenderCommandEncoder::lives`);
+/// `CRIMSON_ONE_LIVE` set keeps one for all, as before (A/B).
+const LIVE_BINDS: usize = 16;
+fn live_binds() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| if std::env::var_os("CRIMSON_ONE_LIVE").is_some() { 1 } else { LIVE_BINDS })
 }
 
 /// Draws of every render encoder and those whose set 0 was the previous draw's ([`SetMemo`]),
@@ -1428,7 +1438,7 @@ impl CommandBuffer {
             extended,
             pass_start: PassStartReads::default(),
             restart: None,
-            live: Arc::default(),
+            lives: Mutex::default(),
             log,
             quiet_bound_values: None,
             bind_memo: binding::BindMemo::default(),
@@ -5968,7 +5978,7 @@ impl RenderCommandEncoder {
         }
         // The encoder's kept bind state, brought to the draw's (`live_bind.rs`), held for the
         // draw: no draw of the encoder runs inside another past here.
-        let live = Arc::clone(&self.live);
+        let live = self.live_for(&pipeline);
         let mut live = lock(&live);
         let settled = self.settle_draw(
             &mut live,
@@ -7676,6 +7686,21 @@ impl RenderCommandEncoder {
     /// variant holds left out (`heap_sets::fit_samplers`, `unlisted` saying so), and
     /// `function_tables` the pipeline's tables. The shape is the kept one where nothing brought
     /// in may have changed it (`live_bind.rs`).
+    /// The kept bind state of `pipeline`'s draws ([`Self::lives`]): its last draw's, else a new
+    /// one. A draw brings any kept state to its own whole, so which one it takes changes only how
+    /// much it makes again.
+    fn live_for(&self, pipeline: &DrawingState) -> Arc<Mutex<LiveBind>> {
+        let mut lives = lock(&self.lives);
+        if let Some(at) = lives.iter().position(|(kept, _)| kept.same(pipeline)) {
+            let entry = lives.remove(at);
+            lives.insert(0, entry);
+        } else {
+            lives.truncate(live_binds() - 1);
+            lives.insert(0, (pipeline.clone(), Arc::default()));
+        }
+        Arc::clone(&lives[0].1)
+    }
+
     fn settle_draw(
         &self,
         live: &mut LiveBind,

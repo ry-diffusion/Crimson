@@ -25,6 +25,9 @@ use std::sync::Arc;
 
 use super::work_counts::Counters;
 
+/// Draws whose bind shape was kept, found among the drawing state's, or made again (fps meter).
+pub static SHAPES: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+
 /// Whether the changes brought into a kept bind state may have changed its shape.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Reshape(bool);
@@ -94,7 +97,9 @@ impl LiveBind {
         counts: &Counters,
         found: impl FnOnce(&BindState) -> Option<Arc<BindShape>>,
     ) -> Arc<BindShape> {
+        use std::sync::atomic::Ordering::Relaxed;
         if let Some(shape) = &self.shape {
+            SHAPES[0].fetch_add(1, Relaxed);
             debug_assert!(
                 **shape == self.state.shape(),
                 "a kept bind shape that is not its state's"
@@ -107,10 +112,12 @@ impl LiveBind {
                     *shape == self.state.shape(),
                     "a bind shape found that is not its state's"
                 );
+                SHAPES[1].fetch_add(1, Relaxed);
                 shape
             }
             None => {
                 counts.draw_shape_made();
+                SHAPES[2].fetch_add(1, Relaxed);
                 Arc::new(self.state.shape())
             }
         };
