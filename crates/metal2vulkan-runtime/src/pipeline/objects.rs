@@ -258,6 +258,65 @@ impl VariantObjects {
     }
 }
 
+/// `M2V_FAST_MATH=1` (a process's environment, e.g. backboardd's through Crimson's `m2v-env`):
+/// modules lose Metal's exactness before the driver sees them, so it may fuse, reassociate and
+/// assume no NaN, infinity or signed zero. CoreAnimation's shaders carried ~1000 `NoContraction`
+/// operations and `SignedZeroInfNanPreserve` in every module, which kept ir3 from simplifying the
+/// translation's exact-rounding code (2026-11-25): GPU-bound App Library frames.
+fn fast_math() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("M2V_FAST_MATH").is_ok_and(|v| v == "1"))
+}
+
+/// `spirv` without its `OpDecorate ... NoContraction` and `OpExecutionMode ...
+/// SignedZeroInfNanPreserve` instructions. Anything that does not parse is returned unchanged.
+fn without_exactness(spirv: &[u32]) -> Vec<u32> {
+    const OP_EXECUTION_MODE: u32 = 16;
+    const OP_DECORATE: u32 = 71;
+    const NO_CONTRACTION: u32 = 42;
+    const SIGNED_ZERO_INF_NAN_PRESERVE: u32 = 4461;
+    if spirv.len() < 5 {
+        return spirv.to_vec();
+    }
+    let mut out = spirv[..5].to_vec();
+    let mut i = 5;
+    while i < spirv.len() {
+        let count = (spirv[i] >> 16) as usize;
+        if count == 0 || i + count > spirv.len() {
+            return spirv.to_vec();
+        }
+        let inst = &spirv[i..i + count];
+        let drop = match inst[0] & 0xffff {
+            OP_DECORATE => count >= 3 && inst[2] == NO_CONTRACTION,
+            OP_EXECUTION_MODE => count >= 3 && inst[2] == SIGNED_ZERO_INF_NAN_PRESERVE,
+            _ => false,
+        };
+        if !drop {
+            out.extend_from_slice(inst);
+        }
+        i += count;
+    }
+    out
+}
+
+#[cfg(test)]
+mod fast_math_tests {
+    #[test]
+    fn drops_only_exactness() {
+        let header = [0x0723_0203, 0x0001_0000, 0, 10, 0];
+        let keep_decorate = [3 << 16 | 71, 5, 30]; // OpDecorate %5 Location (operand left out)
+        let no_contraction = [3 << 16 | 71, 6, 42];
+        let preserve = [4 << 16 | 16, 1, 4461, 32];
+        let keep_mode = [3 << 16 | 16, 1, 7]; // OriginUpperLeft
+        let fadd = [5 << 16 | 129, 2, 6, 3, 4];
+        let words: Vec<u32> = [&header[..], &keep_decorate, &no_contraction, &preserve, &keep_mode, &fadd].concat();
+        let want: Vec<u32> = [&header[..], &keep_decorate, &keep_mode, &fadd].concat();
+        assert_eq!(super::without_exactness(&words), want);
+        let broken: Vec<u32> = [&header[..], &[9 << 16 | 71, 1]].concat();
+        assert_eq!(super::without_exactness(&broken), broken);
+    }
+}
+
 /// The device's module of `spirv`, made now where it holds none. In a program's call
 /// (`content_keyed::program_call`) a module made here enters the device's map; a host step or a
 /// pool piece only looks it up, and on a miss makes a module of its own that no lookup finds, so
@@ -274,6 +333,13 @@ pub(crate) fn shader_module(
     // modules of the same words; `vkCreateShaderModule` copies the words and compiles nothing.
     let mut modules = lock(&shared.shader_modules);
     let made = modules.get_or_make(*digest, program, || {
+        let fast;
+        let spirv = if fast_math() {
+            fast = without_exactness(spirv);
+            &fast[..]
+        } else {
+            spirv
+        };
         let info = vk::ShaderModuleCreateInfo::default().code(spirv);
         // SAFETY: the code is live SPIR-V words for the call.
         let raw = unsafe { shared.vk().create_shader_module(&info, None) }.map_err(vulkan)?;
