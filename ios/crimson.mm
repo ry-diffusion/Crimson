@@ -187,6 +187,17 @@ static void sb_keep_icons(int tries)
 		}));
 	else
 		m2v_log("sbkeepicons: no -[SBTodayViewController _beginAppearanceTransitionForChildViewControllersToVisible:animated:]");
+	/* /private/var/tmp/m2v-blurcap: no blur finer than half resolution. The App Library's glass took 20-25 ms of GPU a frame
+	 * (~40 fps); some of its backdrops captured and filtered the screen at full resolution (830x1794). */
+	Method sc = class_getInstanceMethod(objc_getClass("CABackdropLayer"), sel_registerName("setScale:"));
+	if (access("/private/var/tmp/m2v-blurcap", F_OK) == 0 && sc && !strcmp(method_getTypeEncoding(sc), "v24@0:8d16")) {
+		static void (*set_scale)(id, SEL, double);
+		set_scale = (void (*)(id, SEL, double))method_getImplementation(sc);
+		method_setImplementation(sc, imp_implementationWithBlock(^(id me, double v) {
+			set_scale(me, sel_registerName("setScale:"), v > 0.5 ? 0.5 : v);
+		}));
+		m2v_log("blurcap: backdrop scale capped at 0.5");
+	}
 }
 
 extern "C" __attribute__((visibility("default"))) id m2v_create_device(void)
