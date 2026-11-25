@@ -294,6 +294,7 @@ static void waitForResource(id resource);
 @property(nonatomic) void *shadowOf;   // Chlorophyll: a no-copy buffer our kernel cannot map (plain memory): GPU memory refreshed from these bytes at each commit
 @property(nonatomic) uint64_t shadowHash;   // Chlorophyll: hash of shadowOf's bytes at the last refresh (0: none yet)
 @property(nonatomic) uint64_t shadowCheckedNs;   // Chlorophyll: when shadowOf was last checked (CLOCK_UPTIME_RAW)
+@property(nonatomic) uint64_t shadowEveryNs;   // Chlorophyll: re-check interval, doubled while the bytes stay the same (0: base)
 @property(atomic) BOOL shadowChecking;   // Chlorophyll: a check of a big shadow is queued (chlRefreshShadows)
 @property(nonatomic,strong) NSHashTable *mirrors;   // Chlorophyll: read-only textures "over" this shadow that are images of their own (textureOnBuffer)
 @property(nonatomic) IOSurfaceRef surfaceOwner; // keeps a shared import's CPU mapping alive
@@ -516,6 +517,9 @@ static void chlCheckShadow(NBBuffer *b,uint64_t now) {
  }
  b.shadowCheckedNs=now;
  const uint64_t h=chlHashBytes(copy,length);
+ // unchanged bytes double the next re-check's wait, up to 1 s; a change brings it back to the base (50 ms, 1 s from 1 MB)
+ const uint64_t base=length>=(1u<<20)?1000000000ull:50000000ull;
+ b.shadowEveryNs=h!=b.shadowHash?base:std::min<uint64_t>((b.shadowEveryNs?b.shadowEveryNs:base)*2,1000000000ull);
  if(h!=b.shadowHash){
   memcpy(nmb_buffer_contents(b.handle),copy,length);gChlShadowBytes+=length;b.shadowHash=h;
   NSArray *mirrors;@synchronized(b){mirrors=b.mirrors.allObjects;}
@@ -539,7 +543,10 @@ static void chlRefreshShadows(id<NSFastEnumeration> owners) {
    // here if a client animates one). Buffers of 1 MB or more wait 1 s: the 11 MB static wallpaper re-read every 50 ms was
    // ~27 % of a core in backboardd during swipes (kernel copy + CRC on the A55, 2026-11-24 profile); shortcut: an in-place
    // change of a big client image shows up to 1 s late, lower it if one animates
-   const uint64_t every=nmb_buffer_length(b.handle)>=(1u<<20)?1000000000ull:50000000ull;
+   // shortcut: a client image that sat unchanged for ~1 s and then changes in place shows up to 1 s late (icons and widget
+   // snapshots get new buffers when they change); with every home icon and widget kept built, re-checking each image every
+   // 50 ms was ~half of backboardd's CPU during page drags late in a boot (2026-11-25)
+   const uint64_t every=b.shadowEveryNs?b.shadowEveryNs:(nmb_buffer_length(b.handle)>=(1u<<20)?1000000000ull:50000000ull);
    if(now-b.shadowCheckedNs>=every && !b.shadowChecking){
     b.shadowChecking=YES;b.shadowCheckedNs=now;
     dispatch_async(later,^{chlCheckShadow(b,clock_gettime_nsec_np(CLOCK_UPTIME_RAW));b.shadowChecking=NO;});
