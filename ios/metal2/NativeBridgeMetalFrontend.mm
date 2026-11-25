@@ -1577,6 +1577,14 @@ static void traceBigTextureDraw(id encoder,const char *kind,NSUInteger count,NSU
  if(_cuttable && w)_pieceHandles[w-1]=h;
  [super setHandle:h];
 }
+// Crimson: the replayed calls capture this encoder (self_=self), so while _replay holds them the encoder holds itself, its
+// command buffer and every runtime command buffer that one releases only in its dealloc (the pieces' descriptor pools and
+// 16 MB arena blocks): with the mid-pass cut on, backboardd kept 757 BOs / 647 MB after 20 s of swipes and the GPU page tables
+// ran out (OutOfMemory(Device)). Each cut copies _replay, so after the end nothing needs it.
+- (void)endEncoding {
+ [super endEncoding];
+ std::vector<std::function<bool()>>().swap(_replay);
+}
 - (void)nbRun:(std::function<bool()>)fn what:(const char *)what {
  const bool draw=what[0]=='d' && what[1]=='r',end=what[0]=='e' && what[1]=='n';
  if(_cuttable && !draw && !end)_replay.push_back(fn);
