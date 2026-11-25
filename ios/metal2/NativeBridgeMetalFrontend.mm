@@ -1602,8 +1602,13 @@ static void traceBigTextureDraw(id encoder,const char *kind,NSUInteger count,NSU
 }
 - (void)nbRun:(std::function<bool()>)fn what:(const char *)what {
  const bool draw=what[0]=='d' && what[1]=='r',end=what[0]=='e' && what[1]=='n';
- if(_cuttable && !draw && !end)_replay.push_back(fn);
- [super nbRun:fn what:what];
+ if(_cuttable && !draw && !end){
+  // Crimson: one call shared by the batch and the replay list (wrappers of a shared_ptr fit std::function's inline storage):
+  // copying each call into _replay copied its captures (setBytes' bytes) on CoreAnimation's thread, hundreds a frame
+  auto shared=std::make_shared<std::function<bool()>>(std::move(fn));
+  _replay.push_back([shared]{return (*shared)();});
+  [super nbRun:[shared]{return (*shared)();} what:what];
+ } else [super nbRun:std::move(fn) what:what];
   if(_cuttable && draw && ++_cutDraws>=gChlMidEvery.load()){_cutDraws=0;[self.commandBuffer chlMidCut:self];}
 }
 - (void)setRenderPipelineState:(id<MTLRenderPipelineState>)state {
