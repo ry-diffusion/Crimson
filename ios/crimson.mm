@@ -123,10 +123,19 @@ static void missing(const char *cls, const char *sel)
  * during page swipes, and SpringBoard waits for the replies (2026-11-25 profiles).
  */
 static void (*sb_set_cells)(id, SEL, long, id, id);
+static Class sb_home_list;
 static void sb_set_cells_all(id me, SEL cmd, long visibility, id visible, id prefetched)
 {
 	static NSIndexSet *all = [[NSIndexSet alloc] initWithIndexesInRange:NSMakeRange(0, 64)];
 	(void)prefetched;
+	/* visibility: 0 on screen, 1 partly, 2 off. A home list (SBIconListView itself: the pages and the Today view; not the dock,
+	 * library or Control Center) that goes off has its icon views removed (-removeAllIconViews), and the Today view's 9 widget
+	 * stacks load whenever page 1 settles: a drag between pages 1 and 2 rebuilt page 2 and Today on every return. Off and
+	 * partly visible are both reported as partly visible with every cell, so they stay built. */
+	if (visibility != 0 && object_getClass(me) == sb_home_list) {
+		visibility = 1;
+		visible = all;
+	}
 	sb_set_cells(me, cmd, visibility, visible, all);
 }
 static void sb_keep_icons(int tries)
@@ -143,7 +152,35 @@ static void sb_keep_icons(int tries)
 	}
 	m2v_log("sbkeepicons: hooking -[SBIconListView setCellVisibility:visibleGridCellIndexes:prefetchedGridCellIndexes:] (%s)",
 		method_getTypeEncoding(m));
+	sb_home_list = c;
 	sb_set_cells = (void (*)(id, SEL, long, id, id))method_setImplementation(m, (IMP)sb_set_cells_all);
+	/* -setContentVisibility: (0 on screen, 3 off and prepared, 2 off): a home list going 2 -> 3 sets up every widget stack's
+	 * multiplexed view controller and 3 -> 2 tears them down; SpringBoard flaps page 2 and the Today view between the two
+	 * each time page 1 settles. Home lists stay prepared: 2 is reported as 3. */
+	Method cv = class_getInstanceMethod(c, sel_registerName("setContentVisibility:"));
+	if (cv && !strcmp(method_getTypeEncoding(cv), "v24@0:8Q16")) {
+		static void (*set_content)(id, SEL, unsigned long);
+		set_content = (void (*)(id, SEL, unsigned long))method_getImplementation(cv);
+		method_setImplementation(cv, imp_implementationWithBlock(^(id me, unsigned long v) {
+			if (v == 2 && object_getClass(me) == sb_home_list)
+				v = 3;
+			set_content(me, sel_registerName("setContentVisibility:"), v);
+		}));
+	} else
+		m2v_log("sbkeepicons: no -[SBIconListView setContentVisibility:] with the expected signature");
+	/* When home page 1 settles, SpringBoard flaps the Today view (left of page 1) to prepared and back within ~70 ms, and
+	 * -[SBHTodayViewController viewWillDisappear:] runs appearance transitions on every widget stack, whose
+	 * -viewIsAppearing: sets each multiplexed widget view controller up again: ~0.25-0.45 s on SpringBoard's main thread,
+	 * once per return to page 1. The Today view's children skip those transitions; its widgets still show when it is opened.
+	 * With all three changes a 20 s drag between pages 1 and 2 runs at 57-60 fps (40-43 without, a 0.4 s stall per sweep). */
+	Method today = class_getInstanceMethod(objc_getClass("SBTodayViewController"),
+					       sel_registerName("_beginAppearanceTransitionForChildViewControllersToVisible:animated:"));
+	if (today && !strcmp(method_getTypeEncoding(today), "v24@0:8B16B20"))
+		method_setImplementation(today, imp_implementationWithBlock(^(id me, BOOL visible, BOOL animated) {
+			(void)me; (void)visible; (void)animated;
+		}));
+	else
+		m2v_log("sbkeepicons: no -[SBTodayViewController _beginAppearanceTransitionForChildViewControllersToVisible:animated:]");
 }
 
 extern "C" __attribute__((visibility("default"))) id m2v_create_device(void)
