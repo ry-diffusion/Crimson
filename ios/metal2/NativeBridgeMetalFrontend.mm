@@ -1230,7 +1230,8 @@ static bool chlMidCutOn() {   // the switch is looked at once a second, so it ca
  const uint64_t now=clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
  if(now-lookedNs.load()>1000000000ull){
   lookedNs=now;
-  // the file holds the boot's kern.bootsessionuuid: one left from a boot that crashed while cutting does not cut again
+  // the file holds the boot's kern.bootsessionuuid: one left from a boot that crashed while cutting does not cut again (or
+  // "always", Crimson: sysmem + 40-draw pieces measured 51.3-52.8 fps against 49.8 uncut with xnu 1028, 2026-11-25)
   static char boot[64];static std::once_flag once;
   std::call_once(once,[]{size_t n=sizeof(boot)-1;if(sysctlbyname("kern.bootsessionuuid",boot,&n,nullptr,0)!=0)boot[0]=0;});
   // line 2: draws a piece (24), line 3: "noscratch" leaves memoryless colours memoryless (for measuring)
@@ -1241,7 +1242,8 @@ static bool chlMidCutOn() {   // the switch is looked at once a second, so it ca
    gChlMidNoScratch=fgets(opts,sizeof(opts),f) && strstr(opts,"noscratch");
    fclose(f);
   }
-  on=boot[0] && strcmp(held,boot)==0;
+  // "always" on line 1: on in every boot (the inject's dead-man still turns backboardd's Metal off after unclean launches)
+  on=(boot[0] && strcmp(held,boot)==0) || strcmp(held,"always")==0;
  }
  return on;
 }
