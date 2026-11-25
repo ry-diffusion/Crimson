@@ -2071,7 +2071,7 @@ static void scheduled(void *context);
    const uint64_t pixels=(uint64_t)first.width*first.height;
    gPasses++;gPassPixels+=pixels;encodedWork.passes++;encodedWork.pixels+=pixels;
    const uint64_t passIndex=++gPassDetailLogs;
-   if(passIndex<=3 || passIndex%30==0)NBLOG(@"native-metal: render target #%llu %lux%lu format=%lu load=%lu store=%lu sm=%lu usage=%lu label=%@",(unsigned long long)passIndex,(unsigned long)first.width,(unsigned long)first.height,(unsigned long)first.pixelFormat,(unsigned long)d.colorAttachments[0].loadAction,(unsigned long)d.colorAttachments[0].storeAction,(unsigned long)first.storageMode,(unsigned long)first.usage,first.label?:@"");
+   if(passIndex<=3 || passIndex%30==0)NBLOG(@"native-metal: render target #%llu %lux%lu format=%lu load=%lu store=%lu label=%@",(unsigned long long)passIndex,(unsigned long)first.width,(unsigned long)first.height,(unsigned long)first.pixelFormat,(unsigned long)d.colorAttachments[0].loadAction,(unsigned long)d.colorAttachments[0].storeAction,first.label?:@"");
    uint64_t seen=gBiggestPass.load();while(pixels>seen && !gBiggestPass.compare_exchange_weak(seen,pixels)){}
    if(pixels>=2000000)gFullScreenPasses++;
   }
