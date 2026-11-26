@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT
 # fps test cycle for the m2v trial on the phone (Poco F1 over USB SSH):
 #   ios/tools/fpsrun.sh [--install] [--reboot] [--swipes N] [--label L]
-# --install copies target/ios/out/libcrimson.dylib (and out-metal/bgmtl-inject.dylib with --inject) to the phone;
+# --install copies target/ios/out/libcrimson.dylib (and out-metal/crimson-inject.dylib with --inject) to the phone;
 # --reboot reboots (backboardd only restarts with the phone); then stale per-process kill switches are cleared, the phone
-# is unlocked, N page-swipe pairs run, and the fps meter's lines (/private/var/tmp/m2v-fps) are summarised per process:
+# is unlocked, N page-swipe pairs run, and the fps meter's lines (/private/var/tmp/crimson-fps) are summarised per process:
 # mean frames/s over the seconds that had >= 5 frames, and the share of frame intervals <= 17 ms (60 fps) and <= 34 ms.
 # These are commits; the "panel:" line counts the frames the kernel framebuffer actually showed during the swipes.
 set -uo pipefail
@@ -19,12 +19,12 @@ while [ $# -gt 0 ]; do
   esac; shift
 done
 if [ $install = 1 ]; then
-  T=90 P 'cat > /usr/local/lib/bgmtl/.libcrimson.tmp' < "${CRIMSON_OUT:-$(dirname "$0")/../../target/ios/out}/libcrimson.dylib" &&
-  P 'chmod 755 /usr/local/lib/bgmtl/.libcrimson.tmp && mv /usr/local/lib/bgmtl/.libcrimson.tmp /usr/local/lib/bgmtl/libcrimson.dylib' || exit 1
+  T=90 P 'cat > /usr/local/lib/crimson/.libcrimson.tmp' < "${CRIMSON_OUT:-$(dirname "$0")/../../target/ios/out}/libcrimson.dylib" &&
+  P 'chmod 755 /usr/local/lib/crimson/.libcrimson.tmp && mv /usr/local/lib/crimson/.libcrimson.tmp /usr/local/lib/crimson/libcrimson.dylib' || exit 1
 fi
 if [ $inject = 1 ]; then
-  T=90 P 'cat > /usr/local/lib/bgmtl/.inject.tmp' < "$W/out-metal/bgmtl-inject.dylib" &&
-  P 'chmod 755 /usr/local/lib/bgmtl/.inject.tmp && mv /usr/local/lib/bgmtl/.inject.tmp /usr/local/lib/bgmtl/bgmtl-inject.dylib' || exit 1
+  T=90 P 'cat > /usr/local/lib/crimson/.inject.tmp' < "$W/out-metal/crimson-inject.dylib" &&
+  P 'chmod 755 /usr/local/lib/crimson/.inject.tmp && mv /usr/local/lib/crimson/.inject.tmp /usr/local/lib/crimson/crimson-inject.dylib' || exit 1
 fi
 # Since 2026-11-24 the boot partition holds boot56-recovery (panic reset, watchdog, sweetcores=0xf1 = CPU0 + A75s), so a
 # plain reboot keeps the big-core scheduling. M2V_BOOT_IMG=... RAM-boots another image instead (fastboot boot, not flashed);
@@ -47,7 +47,7 @@ fi
 P 'cd /private/var/tmp; for b in com.apple.MercuryPoster com.apple.springboard; do if [ -f bgmtl.off.$b ] && [ -f bgmtl.m2v.$b ]; then mv bgmtl.off.$b /var/root/bgmtl.off.$b.fpsrun; rm -f bgmtl.state.$b; [ $b = com.apple.MercuryPoster ] && for p in $(ps -ax -o pid,command | grep "[M]ercuryPosterExtension" | cut -c1-6); do kill $p; done; echo "cleared $b"; fi; done; true'
 P '/var/root/sweetwake wake >/dev/null 2>&1; /var/root/sweetwake unlock >/dev/null 2>&1; true'
 for i in 1 2 3; do T=13 P true; done
-start=$(P 'wc -l < /private/var/tmp/m2v.log' | tr -d ' ')
+start=$(P 'wc -l < /private/var/tmp/crimson.log' | tr -d ' ')
 # what reached the panel: the framebuffer's own counters (the meter below counts commits, shown or not)
 FB() { P '/var/root/sysctlget kern.sweet_fb' | tr ' ' '\n' | grep -E '^(swaps|coalesced|copy_frames|zc_frames|scan_gpu_copies|gpu_hold_timeouts)=' | tr '\n' ' '; }
 fb0=$(FB)
@@ -64,8 +64,8 @@ d = {k: int(b[k]) - int(a[k]) for k in a if k in b}
 shown = d.get('copy_frames', 0) + d.get('zc_frames', 0) + d.get('scan_gpu_copies', 0)
 print(f"{sys.argv[1]}: panel: {shown} frames shown of {d.get('swaps', 0)} swaps ({d.get('coalesced', 0)} replaced before shown, {d.get('gpu_hold_timeouts', 0)} shown at the GPU gate's cap)")
 EOF2
-P "tail -n +${start:-1} /private/var/tmp/m2v.log | grep 'fps:'" > "/tmp/fpsrun-$label.txt" 2>/dev/null
-P "tail -n +${start:-1} /private/var/tmp/m2v.log | grep -E 'MISSING|refused|memory is gone|Lost' | cut -c1-160 | sort | uniq -c | sort -rn | head -8"
+P "tail -n +${start:-1} /private/var/tmp/crimson.log | grep 'fps:'" > "/tmp/fpsrun-$label.txt" 2>/dev/null
+P "tail -n +${start:-1} /private/var/tmp/crimson.log | grep -E 'MISSING|refused|memory is gone|Lost' | cut -c1-160 | sort | uniq -c | sort -rn | head -8"
 P '/var/root/sweetgpu | grep -oE "mhz=[0-9]+|busy_pct=[0-9]+|recoveries=[0-9]+|hangs=[0-9]+" | tr "\n" " "; echo'
 python3 - "/tmp/fpsrun-$label.txt" "$label" <<'EOF'
 import re, sys, collections

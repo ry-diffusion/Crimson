@@ -50,7 +50,7 @@ $CC -x objective-c++ -std=c++17 -fobjc-arc -O2 -g -Wall -Wno-deprecated-declarat
   -Wno-unguarded-availability-new -I"$M" -dynamiclib -o "$OUT/libcrimson.dylib" \
   "$R/ios/crimson.mm" "$M/NativeBridgeMetalFrontend.mm" -x none "$BRIDGE" -Wl,-dead_strip -lc++ \
   -framework Foundation -framework Metal -framework QuartzCore -framework IOSurface -framework IOKit -framework CoreFoundation \
-  -install_name /usr/local/lib/bgmtl/libcrimson.dylib -Wl,-rpath,@loader_path
+  -install_name /usr/local/lib/crimson/libcrimson.dylib -Wl,-rpath,@loader_path
 xcrun dsymutil "$OUT/libcrimson.dylib" -o "$OUT/libcrimson.dylib.dSYM" 2>/dev/null || true
 xcrun strip -x "$OUT/libcrimson.dylib"
 python3 "$BG/tools/renegade/pacstrip.py" --sign "$OUT/libcrimson.dylib" >/dev/null

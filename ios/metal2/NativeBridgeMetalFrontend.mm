@@ -36,6 +36,7 @@
 #include <mach/mach.h>
 #include "bridge/NativeMetalObjects.h"
 #include "NativeBridgeMetalFrontend.h"
+extern "C" const char *crimson_switch(const char *name);   // ios/crimson.mm: /private/var/tmp/crimson-NAME, or the old m2v-NAME
 
 extern "C" void sys_dcache_flush(void *start, size_t length);
 
@@ -74,18 +75,18 @@ static std::atomic<uint32_t> gWatchLogs{0};
 // 0242: the per-binding / per-draw diagnostics (0182 big-texture draw trace, 0188 watched surfaces, 0219 YCbCr
 // draws) cost Objective-C allocations, associated-object locks and string formatting on every texture and sampler
 // bind, pipeline change and draw. They now run only while /var/local/mtl2-trace exists (read once per process).
-// Chlorophyll: /private/var/tmp/m2v-trace-only holds a process name: the trace and dump switches then apply to that process alone
+// Chlorophyll: /private/var/tmp/crimson-trace-only holds a process name: the trace and dump switches then apply to that process alone
 // (the dump switches in SpringBoard slow its start by minutes).
 static bool chlTraceProc() {
  static const bool mine=[]{
   char name[64]={};
-  if(FILE *f=fopen("/private/var/tmp/m2v-trace-only","r")){if(fgets(name,sizeof name,f))name[strcspn(name,"\r\n")]=0;fclose(f);}
+  if(FILE *f=fopen(crimson_switch("trace-only"),"r")){if(fgets(name,sizeof name,f))name[strcspn(name,"\r\n")]=0;fclose(f);}
   return !name[0] || strcmp(name,getprogname())==0;
  }();
  return mine;
 }
 static bool traceOn() {
- static const bool on=chlTraceProc() && access("/private/var/tmp/m2v-trace",F_OK)==0;   // Chlorophyll: our path
+ static const bool on=chlTraceProc() && access(crimson_switch("trace"),F_OK)==0;   // Chlorophyll: our path
  return on;
 }
 static bool watchedSurface(IOSurfaceRef sf) {
@@ -206,14 +207,14 @@ static void journal(const std::string &line) {
 // abort, so one missing method does not crash SpringBoard into launchd's reboot limit. Forwarding (not
 // resolveInstanceMethod:) keeps respondsToSelector: truthful. shortcut: a float or large-struct return is not zeroed;
 // implement each MISSING selector properly as it shows up.
-// Chlorophyll: frames for the fps meter (/private/var/tmp/m2v-fps): commits with render passes, their time and draw count.
+// Chlorophyll: frames for the fps meter (/private/var/tmp/crimson-fps): commits with render passes, their time and draw count.
 static std::atomic<uint64_t> gChlFrameUs[512];
 static std::atomic<uint32_t> gChlFrameDraws[512];
 static std::atomic<uint64_t> gChlPasses{0},gChlAgeUs{0},gChlCommitUs{0},gChlTimedFrames{0};
 static std::atomic<uint32_t> gChlFrames{0};
-// Chlorophyll debugging (CHL_M2V_SKIP in /private/var/tmp/m2v-env, read by processes started after it is written): drop work to find
+// Chlorophyll debugging (CHL_M2V_SKIP in /private/var/tmp/crimson-env, read by processes started after it is written): drop work to find
 // what costs GPU time. "draws", "dispatches", "draw:N" / "dispatch:N" (the N-th of a command buffer, from 0).
-// with tracing (/private/var/tmp/m2v-trace): the first 40 draws of a process, with their pipeline, for CHL_M2V_SKIP's indices
+// with tracing (/private/var/tmp/crimson-trace): the first 40 draws of a process, with their pipeline, for CHL_M2V_SKIP's indices
 static void chlLogDraw(id encoder,uint32_t index,NSUInteger count,NSUInteger instances) {
  static std::atomic<int> n{0};
  if(n.fetch_add(1)>=4000)return;
@@ -370,10 +371,10 @@ static int chlSurfacePrime(void *ctx,void *start,uint64_t length,uint64_t granul
  return fd;
 }
 static void chlSurfaceRelease(void *ctx) {CFRelease((IOSurfaceRef)ctx);}
-// Chlorophyll (debugging): /private/var/tmp/m2v-dump (a directory) makes the first 6 command buffers of a process that
+// Chlorophyll (debugging): /private/var/tmp/crimson-dump (a directory) makes the first 6 command buffers of a process that
 // render or compute copy each pass's resolve/colour target and each compute-bound texture into shared buffers at commit, written
 // after completion as <dir>/<pid>-<cb>-<n>-<what>.raw: "M2VD", width, height, pixel format, bytes per row (uint32 each), texels.
-static bool chlDumpOn() {static const bool on=chlTraceProc() && access("/private/var/tmp/m2v-dump",F_OK)==0;return on;}
+static bool chlDumpOn() {static const bool on=chlTraceProc() && access(crimson_switch("dump"),F_OK)==0;return on;}
 static void chlNoteDump(id cb,id<MTLTexture> t,NSString *what) {
  if(!cb || !t || t.sampleCount>1 || t.storageMode==MTLStorageModeMemoryless || t.textureType!=MTLTextureType2D)return;
  NSMutableArray *a=objc_getAssociatedObject(cb,"chlDump");
@@ -393,9 +394,9 @@ static NSUInteger chlTexelBytes(MTLPixelFormat f) {
  }
 }
 static std::atomic<int> gDumpCommits{0};
-// Chlorophyll: /private/var/tmp/m2v-dump-passes (with m2v-dump's directory): each render pass's colour target is copied right after the
+// Chlorophyll: /private/var/tmp/crimson-dump-passes (with m2v-dump's directory): each render pass's colour target is copied right after the
 // pass ends, so ping-ponged targets (RenderBox's distance-field iterations) show every step; the first 60 passes of a process.
-static bool chlDumpPassesOn() {static const bool on=chlTraceProc() && access("/private/var/tmp/m2v-dump-passes",F_OK)==0;return on;}
+static bool chlDumpPassesOn() {static const bool on=chlTraceProc() && access(crimson_switch("dump-passes"),F_OK)==0;return on;}
 static NSUInteger chlTexelBytes(MTLPixelFormat f);
 static void chlDumpPass(id cb,id<MTLTexture> t) {
  static std::atomic<int> passes{0};
@@ -412,7 +413,7 @@ static void chlDumpPass(id cb,id<MTLTexture> t) {
  NSString *label=[t.label?:@"" stringByReplacingOccurrencesOfString:@" " withString:@"_"];
  [(id<MTLCommandBuffer>)cb addCompletedHandler:^(id<MTLCommandBuffer>){
   char path[256];
-  snprintf(path,sizeof path,"/private/var/tmp/m2v-dump/%d-pass%03d-%s.raw",getpid(),n,label.UTF8String);
+  snprintf(path,sizeof path,"%s/%d-pass%03d-%s.raw",crimson_switch("dump"),getpid(),n,label.UTF8String);
   FILE *f=fopen(path,"wb");
   if(!f)return;
   const uint32_t head[5]={0x44563244u,(uint32_t)w,(uint32_t)h,(uint32_t)t.pixelFormat,(uint32_t)(w*bpp)};
@@ -443,7 +444,7 @@ static void chlEncodeDumps(id<MTLCommandBuffer> cb) {
   for(NSArray *o in outs){
    id<MTLBuffer> b=o[0];id<MTLTexture> t=o[1];
    char path[256];
-   snprintf(path,sizeof path,"/private/var/tmp/m2v-dump/%d-%d-%u-%s.raw",getpid(),n,i++,[o[2] UTF8String]);
+   snprintf(path,sizeof path,"%s/%d-%d-%u-%s.raw",crimson_switch("dump"),getpid(),n,i++,[o[2] UTF8String]);
    FILE *f=fopen(path,"wb");
    if(!f){NBLOG(@"chl dump: cannot write %s",path);continue;}
    const uint32_t head[5]={0x44563244u,(uint32_t)t.width,(uint32_t)t.height,(uint32_t)t.pixelFormat,(uint32_t)(t.width*chlTexelBytes(t.pixelFormat))};
@@ -1126,11 +1127,11 @@ static void waitForResource(id resource) {
  }
  gTimeResourceWait.add(began);
 }
-// Chlorophyll: deferred encoding (/private/var/tmp/m2v-defer). Encoder calls (binds, draws, ends, blits, dispatches) run in order
+// Chlorophyll: deferred encoding (/private/var/tmp/crimson-defer). Encoder calls (binds, draws, ends, blits, dispatches) run in order
 // on one serial worker queue, so CoreAnimation's thread goes on with its own work while the runtime translates the last calls;
 // encoder creation, commit and event signals drain the queue first (the runtime's command buffer is used by one thread at a
 // time). Each call keeps its encoder (and the objects it names) alive and its handle as it was when enqueued.
-static bool chlDeferOn() {static const bool on=access("/private/var/tmp/m2v-defer",F_OK)==0;return on;}
+static bool chlDeferOn() {static const bool on=access(crimson_switch("defer"),F_OK)==0;return on;}
 static char gChlWorkerKey;
 // Chlorophyll: xnu 1022's swap gate (kern.sweet_fb_gate_committed / _submitted). Async commits are made only in backboardd and
 // only when the kernel has the gate: its framebuffer swap must not scan a frame whose GPU work is not submitted yet, and other
@@ -1165,7 +1166,7 @@ static void chlGateWrite(int which,uint64_t v) {
 static std::atomic<uint64_t> gChlWorkTicks[4],gChlPipeSets{0},gChlCuts{0},gChlMidCuts{0};
 static std::atomic<uint64_t> gChlSubmitLagUs{0},gChlSubmitLagN{0};   // async commits: commit -> submitted by the worker
 static bool chlAsyncOn() {
- static const bool on=chlDeferOn() && access("/private/var/tmp/m2v-async-commit",F_OK)==0 && chlGateMibs();
+ static const bool on=chlDeferOn() && access(crimson_switch("async-commit"),F_OK)==0 && chlGateMibs();
  return on;
 }
 // The encode workers: serial queues. A command buffer's calls go to one of them, in order. Everything is on the first one,
@@ -1190,7 +1191,7 @@ static void chlDrainWork() {if(chlDeferOn() && !chlOnWorker())for(unsigned i=0;i
 // unfinished (at most a second: a lost completion must not stop the display).
 enum {CHL_MAX_FLIGHT=3};
 static int gChlFlight;static std::mutex gChlFlightLock;static std::condition_variable gChlFlightTurn;
-// Debugging (/private/var/tmp/m2v-frametrace): every 32nd command buffer of backboardd notes when its passes are issued, start
+// Debugging (/private/var/tmp/crimson-frametrace): every 32nd command buffer of backboardd notes when its passes are issued, start
 // and end on the workers, and when its pieces commit; a heavy one is logged at its submit as "chl frame: ...", times in 0.1 ms
 // since the buffer was made. Events: P pass issued, C cut issued, M commit called (display thread); p pass starts, e piece
 // encoded, s its shadows refreshed, d piece committed, f final submit done (workers, with the worker's number).
@@ -1237,14 +1238,14 @@ static void chlInOrder(uint64_t number,void (^commit)(void)) {
  }
  gChlDraining=false;
 }
-// Chlorophyll: /private/var/tmp/m2v-midcut (read at start, backboardd with async commits and cuts): a pass may be cut between its
+// Chlorophyll: /private/var/tmp/crimson-midcut (read at start, backboardd with async commits and cuts): a pass may be cut between its
 // draws (chlMidCut) when cutting it keeps what it draws: one sample, no visibility results, and every attachment either stored
 // (no resolve), so the next piece loads it, or memoryless and never loaded or stored (CoreAnimation's RGBA16F scratch colour:
 // shortcut: a draw that reads what an earlier draw wrote into such an attachment across a cut reads nothing; give it memory
 // and store/load it if a pass needs that).
 static std::atomic<uint32_t> gChlMidEvery{24};static std::atomic<bool> gChlMidNoScratch{false};
 static bool chlMidCutOn() {   // the switch is looked at once a second, so it can be turned on and off while backboardd runs
- static const bool here=access("/private/var/tmp/m2v-cut",F_OK)==0 && strcmp(getprogname(),"backboardd")==0;
+ static const bool here=access(crimson_switch("cut"),F_OK)==0 && strcmp(getprogname(),"backboardd")==0;
  static std::atomic<uint64_t> lookedNs{0};static std::atomic<bool> on{false};
  if(!here)return false;
  const uint64_t now=clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
@@ -1256,7 +1257,7 @@ static bool chlMidCutOn() {   // the switch is looked at once a second, so it ca
   std::call_once(once,[]{size_t n=sizeof(boot)-1;if(sysctlbyname("kern.bootsessionuuid",boot,&n,nullptr,0)!=0)boot[0]=0;});
   // line 2: draws a piece (24), line 3: "noscratch" leaves memoryless colours memoryless (for measuring)
   char held[64]={0},every[16]={0},opts[32]={0};
-  if(FILE *f=fopen("/private/var/tmp/m2v-midcut","r")){
+  if(FILE *f=fopen(crimson_switch("midcut"),"r")){
    if(fgets(held,sizeof(held),f))held[strcspn(held,"\r\n")]=0;
    if(fgets(every,sizeof(every),f) && atoi(every)>=4)gChlMidEvery=(uint32_t)atoi(every);else gChlMidEvery=24;
    gChlMidNoScratch=fgets(opts,sizeof(opts),f) && strstr(opts,"noscratch");
@@ -1278,7 +1279,7 @@ static bool chlPassCuttable(MTLRenderPassDescriptor *d,const NmbRenderPassDescri
  for(unsigned i=0;i<8;i++)if(!ok(d.colorAttachments[i],pass.colors[i]))return false;
  return ok(d.depthAttachment,pass.depth) && ok(d.stencilAttachment,pass.stencil);
 }
-// Chlorophyll: batched deferral (/private/var/tmp/m2v-batch, with m2v-defer). Each call was its own dispatch_async (16-18 us a
+// Chlorophyll: batched deferral (/private/var/tmp/crimson-batch, with m2v-defer). Each call was its own dispatch_async (16-18 us a
 // draw on CoreAnimation's thread); now setters wait on the encoder and go with the next call that does work (a draw, an end, a
 // dispatch, a blit: what starts with d, e, c, f or g) in one dispatch, in order. Nothing outside the encoder needs a setter
 // before that call (Metal ends an encoder before the next one, a commit or a signal). shortcut: an encoder released without
@@ -1286,9 +1287,9 @@ static bool chlPassCuttable(MTLRenderPassDescriptor *d,const NmbRenderPassDescri
 // fps meter: the batches' wall time (mach ticks), their thread CPU time (ns) and the CPU each batch started on (0 is the A55
 // with sweetcores=0xf1; TPIDRRO_EL0's low bits read 0 on every batch on this kernel, 2026-11-25)
 static std::atomic<uint64_t> gChlBatchWall{0},gChlBatchCpuNs{0},gChlBatchOn[8];
-static bool chlCpuMeterOn() {static const bool on=access("/private/var/tmp/m2v-cpumeter",F_OK)==0;return on;}   // two syscalls a batch
+static bool chlCpuMeterOn() {static const bool on=access(crimson_switch("cpumeter"),F_OK)==0;return on;}   // two syscalls a batch
 static inline unsigned chlCpuNumber() {size_t n=0;return pthread_cpu_number_np(&n)==0?(unsigned)(n&7):0;}
-static bool chlBatchOn() {static const bool on=access("/private/var/tmp/m2v-batch",F_OK)==0;return on;}
+static bool chlBatchOn() {static const bool on=access(crimson_switch("batch"),F_OK)==0;return on;}
 @implementation NBEncoder
 - (void)dealloc {if(_handle)nmb_encoder_discard(_handle);}
 - (void)chlFlush {
@@ -1966,7 +1967,7 @@ static void scheduled(void *context);
  if((self=[super init])){_scheduledHandlers=[NSMutableArray array];_completedHandlers=[NSMutableArray array];_presentDrawables=[NSMutableArray array];_surfaces=[NSMutableSet set];_rotatedShadows=[NSMutableSet set];_writtenShadows=[NSMutableSet set];_userDictionary=[NSMutableDictionary dictionary];_resourceOwners=[NSMutableSet set];_handlers=dispatch_group_create();_schedulingHandlers=dispatch_group_create();}
  if(self){
   createdUs=nowUs();chlQueueIndex=chlAsyncOn()?chlIdlestWorker():0;chlQueue=chlWorkQueue(chlQueueIndex);
-  static const bool trace=access("/private/var/tmp/m2v-frametrace",F_OK)==0;
+  static const bool trace=access(crimson_switch("frametrace"),F_OK)==0;
   static std::atomic<unsigned> n{0};
   if(trace && chlAsyncOn() && n++%32==0)chlTrace=new std::vector<std::array<uint32_t,4>>();
  }
@@ -2357,11 +2358,11 @@ static void scheduled(void *context);
  dispatch_queue_t queue=_queue.completionQueue;
  if(queue)dispatch_async(queue,run);else run();
 }
-// Crimson: the on-screen performance HUD (/private/var/tmp/m2v-hud, backboardd): the branding and two lines of the fps meter's last second, drawn
+// Crimson: the on-screen performance HUD (/private/var/tmp/crimson-hud, backboardd): the branding and two lines of the fps meter's last second, drawn
 // on the CPU with a 5x7 font and blitted into the top-left corner of each frame's screen target at commit (no shader, one blit a
 // frame). FPS = rendering commits a second; C-D = commit to GPU done; GPU = GPU time a frame; DRAW = encode-worker time a draw;
 // D/F = draws a frame; SUB = commit to submitted.
-static bool chlHudOn() {static const bool on=access("/private/var/tmp/m2v-hud",F_OK)==0 && strcmp(getprogname(),"backboardd")==0;return on;}
+static bool chlHudOn() {static const bool on=access(crimson_switch("hud"),F_OK)==0 && strcmp(getprogname(),"backboardd")==0;return on;}
 static char gChlHud[2][48]={"FPS --","WAITING"};static std::mutex gChlHudLock;
 static const char *chlHudGlyph(char c) {   // 7 rows of 5 bits, MSB left
  static const struct {char c;uint8_t r[7];} f[]={
@@ -2416,7 +2417,7 @@ static void chlPaceFrame(bool frame) {
  chlPaceFrame(encodedWork.passes>0);
  const uint64_t chlCommitBegan=nowUs();
  struct ChlCommitTimer {uint64_t began;bool frame;~ChlCommitTimer(){if(frame){gChlCommitUs+=nowUs()-began;gChlTimedFrames++;}}} chlTimer{chlCommitBegan,encodedWork.passes>0};
- // Chlorophyll: async commit (/private/var/tmp/m2v-async-commit, with m2v-defer): the shadow refresh and the submit run on the
+ // Chlorophyll: async commit (/private/var/tmp/crimson-async-commit, with m2v-defer): the shadow refresh and the submit run on the
  // encode worker after this buffer's calls, so CoreAnimation starts its next frame instead of waiting for the worker to catch up
  const bool async=chlAsyncOn() && !chlDumpOn() && !_rotatedShadows.count && !(_surfaces.count && syncSubmitEnabled());
  if(!async){
@@ -2524,13 +2525,13 @@ static void chlPaceFrame(bool frame) {
 // in several passes, with small backdrop captures between them): the surfaces drawn so far are flushed at the cut as at a commit.
 // The kernel still shows the frame only after the buffer's own commit is submitted (swap gate), and the surface the frame
 // before it is shown from is not drawn again until that frame was taken (xnu 1023 holds the next swap, so the frame after).
-// Only while /private/var/tmp/m2v-cut exists (read at process start). Measured on heavy home-screen frames: commit to GPU done
+// Only while /private/var/tmp/crimson-cut exists (read at process start). Measured on heavy home-screen frames: commit to GPU done
 // 50 -> 35 ms; the frame rate did not change (CoreAnimation renders such a frame every third vsync whatever we do, see NOTES).
 // 16 draws: a heavy home-screen frame is one pass of ~130 draws after ~10 small ones, so it is cut into ~4 pieces whatever
 // the count; 16 measured slightly better than 48 (commit to GPU done 38-43 ms against 48). CHL_M2V_CUT_DRAWS (m2v-env) overrides.
 enum {CHL_CUT_DRAWS=16};
 - (void)chlCut {
- static const bool on=access("/private/var/tmp/m2v-cut",F_OK)==0;
+ static const bool on=access(crimson_switch("cut"),F_OK)==0;
  static const uint32_t cutDraws=getenv("CHL_M2V_CUT_DRAWS")?(uint32_t)atoi(getenv("CHL_M2V_CUT_DRAWS")):CHL_CUT_DRAWS;   // m2v-env, for tuning
  if(!on || !chlAsyncOn() || self.committed || self.encodeFailure || _rotatedShadows.count || chlDumpOn() ||
     encodedWork.draws-chlCutDraws<cutDraws)return;
@@ -2645,7 +2646,7 @@ enum {CHL_CUT_DRAWS=16};
  const uint64_t began=nowUs();
  // Chlorophyll: backboardd with m2v-bb-nowait does not wait for the GPU here anyway; with an async commit it does not wait for
  // the submit either (its framebuffer swap then may show a frame before the GPU drew it: measured, see NOTES)
- static const bool bbNoWait=strcmp(getprogname(),"backboardd")==0 && access("/private/var/tmp/m2v-bb-nowait",F_OK)==0;
+ static const bool bbNoWait=strcmp(getprogname(),"backboardd")==0 && access(crimson_switch("bb-nowait"),F_OK)==0;
  if(self.chlSubmitPending && bbNoWait){gTimeWaitScheduled.add(began);return;}
  [self chlSettle];
  if(!self.failedLocally && !nmb_command_buffer_wait_scheduled(_handle)){
@@ -2662,8 +2663,8 @@ enum {CHL_CUT_DRAWS=16};
   * frames are shown through the kernel's swap, which already waits for the GPU.
   */
  // Chlorophyll: our kernel's framebuffer swap does not wait for the GPU (Chlorophyll's backboardd needed synchronous commits), so
- // backboardd waits here too; /private/var/tmp/m2v-bb-nowait restores guacamole's exemption.
- static const bool windowServer=strcmp(getprogname(),"backboardd")==0 && access("/private/var/tmp/m2v-bb-nowait",F_OK)==0;
+ // backboardd waits here too; /private/var/tmp/crimson-bb-nowait restores guacamole's exemption.
+ static const bool windowServer=strcmp(getprogname(),"backboardd")==0 && access(crimson_switch("bb-nowait"),F_OK)==0;
  if(drawsToSurface && !windowServer && !self.failedLocally){
   nmb_command_buffer_wait(_handle,0);
   static std::atomic<uint64_t> waits{0};const uint64_t w=++waits;
@@ -3819,7 +3820,7 @@ extern "C" id native_bridge_metal_open(const char *loader,const char *cache,uint
  if(cache){gJournalPath=std::string(cache)+"/pipelines.log";gJournalBegan=nowUs();}
  // Chlorophyll: the fps meter, one line a second with frames in it: rendering commits, frame intervals (<=17 ms = 60 fps),
  // draws per frame, and commit-to-completion of the second's command buffers
- if(access("/private/var/tmp/m2v-fps",F_OK)==0 || chlHudOn()) {
+ if(access(crimson_switch("fps"),F_OK)==0 || chlHudOn()) {
   dispatch_source_t timer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_global_queue(QOS_CLASS_UTILITY,0));
   dispatch_source_set_timer(timer,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),NSEC_PER_SEC,50*NSEC_PER_MSEC);
   __block uint32_t seen=gChlFrames.load();

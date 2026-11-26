@@ -4,7 +4,7 @@
  * (libchlorophyll.dylib's ICD entry points, our kernel through the libdrm stand-in). A trial beside Chlorophyll's own
  * runtime: the inject (chlorophyll-turnip inject/bgmtl_inject.m) asks m2v_create_device() instead of bgmtl_create_device() for a process whose
  * /private/var/tmp/bgmtl.m2v.<bundle id> exists, and registers the answer with MTLAddDevice the same way.
- * Log: /private/var/tmp/m2v.log (when it exists), lines "M2V[pid name]: ...".
+ * Log: /private/var/tmp/crimson.log (or the old m2v.log; when it exists), lines "M2V[pid name]: ...".
  */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -19,8 +19,27 @@
 #include <unistd.h>
 #include "NativeBridgeMetalFrontend.h"
 
-#define M2V_TURNIP "/usr/local/lib/bgmtl/libchlorophyll.dylib"
-#define M2V_LOG "/private/var/tmp/m2v.log"
+/* Phone paths (2026-11-26 rename): /usr/local/lib/crimson/ and /private/var/tmp/crimson-*; the old bgmtl/m2v names are still
+ * read while they exist (and /usr/local/lib/bgmtl/ keeps links for the system binaries that load the inject by that path). */
+static const char *crimson_pick(const char *now, const char *old)
+{
+	return access(now, F_OK) == 0 || access(old, F_OK) != 0 ? now : old;
+}
+#define M2V_TURNIP crimson_pick("/usr/local/lib/crimson/libturnip.dylib", "/usr/local/lib/bgmtl/libchlorophyll.dylib")
+#define M2V_LOG crimson_pick("/private/var/tmp/crimson.log", "/private/var/tmp/m2v.log")
+
+/* A switch file: /private/var/tmp/crimson-NAME, or the old /private/var/tmp/m2v-NAME while only that one exists. */
+extern "C" const char *crimson_switch(const char *name)
+{
+	static __thread char buf[8][160];
+	static __thread unsigned k;
+	char *now = buf[k++ % 8], old[160];
+	snprintf(now, sizeof(buf[0]), "/private/var/tmp/crimson-%s", name);
+	snprintf(old, sizeof(old), "/private/var/tmp/m2v-%s", name);
+	if (access(now, F_OK) != 0 && access(old, F_OK) == 0)
+		strcpy(now, old);
+	return now;
+}
 
 extern "C" void sm2_logs(const char *s)
 {
@@ -69,8 +88,11 @@ extern "C" __attribute__((visibility("default"))) m2v_vkfn vkGetInstanceProcAddr
 {
 	static m2v_vkfn (*icd)(void *, const char *);
 	if (!icd) {
-		void *h = dlopen(M2V_TURNIP, RTLD_NOW | RTLD_GLOBAL);
-		icd = h ? (m2v_vkfn(*)(void *, const char *))dlsym(h, "vk_icdGetInstanceProcAddr") : NULL;
+		/* the Turnip the inject already loaded (by @rpath, maybe through the /usr/local/lib/bgmtl link): never a second copy */
+		icd = (m2v_vkfn(*)(void *, const char *))dlsym(RTLD_DEFAULT, "vk_icdGetInstanceProcAddr");
+		void *h = icd ? NULL : dlopen(M2V_TURNIP, RTLD_NOW | RTLD_GLOBAL);
+		if (!icd)
+			icd = h ? (m2v_vkfn(*)(void *, const char *))dlsym(h, "vk_icdGetInstanceProcAddr") : NULL;
 		if (!icd)
 			m2v_log("no vk_icdGetInstanceProcAddr in %s: %s", M2V_TURNIP, dlerror());
 	}
@@ -190,7 +212,7 @@ static void sb_keep_icons(int tries)
 	/* /private/var/tmp/m2v-blurcap: no blur finer than half resolution. The App Library's glass took 20-25 ms of GPU a frame
 	 * (~40 fps); some of its backdrops captured and filtered the screen at full resolution (830x1794). */
 	Method sc = class_getInstanceMethod(objc_getClass("CABackdropLayer"), sel_registerName("setScale:"));
-	if (access("/private/var/tmp/m2v-blurcap", F_OK) == 0 && sc && !strcmp(method_getTypeEncoding(sc), "v24@0:8d16")) {
+	if (access(crimson_switch("blurcap"), F_OK) == 0 && sc && !strcmp(method_getTypeEncoding(sc), "v24@0:8d16")) {
 		static void (*set_scale)(id, SEL, double);
 		set_scale = (void (*)(id, SEL, double))method_getImplementation(sc);
 		method_setImplementation(sc, imp_implementationWithBlock(^(id me, double v) {
@@ -208,9 +230,10 @@ extern "C" __attribute__((visibility("default"))) id m2v_create_device(void)
 		Dl_info self = {0};
 		dladdr((void *)m2v_create_device, &self);
 		char cache[256];
-		snprintf(cache, sizeof(cache), "/private/var/tmp/m2v-cache/%s", getprogname());
-		mkdir("/private/var/tmp/m2v-cache", 0777);
-		chmod("/private/var/tmp/m2v-cache", 0777);
+		const char *cdir = crimson_switch("cache");
+		snprintf(cache, sizeof(cache), "%s/%s", cdir, getprogname());
+		mkdir(cdir, 0777);
+		chmod(cdir, 0777);
 		mkdir(cache, 0777);
 		if (access(cache, W_OK) != 0) {   /* sandboxed: its own caches directory */
 			char dir[200];
@@ -225,7 +248,7 @@ extern "C" __attribute__((visibility("default"))) id m2v_create_device(void)
 		CFPreferencesSetAppValue(CFSTR("CAEnableDeepFramebuffer"), kCFBooleanFalse, kCFPreferencesCurrentApplication);
 		/* debugging: KEY=VALUE lines into this process's environment (TU_DEBUG, MESA_LOG_FILE, METAL2VULKAN_*);
 		 * PROCESS:KEY=VALUE only into the process named PROCESS (e.g. backboardd:MESA_GPU_TRACES=print) */
-		if (FILE *ef = fopen("/private/var/tmp/m2v-env", "r")) {
+		if (FILE *ef = fopen(crimson_switch("env"), "r")) {
 			char line[256];
 			while (fgets(line, sizeof(line), ef)) {
 				line[strcspn(line, "\r\n")] = 0;
@@ -263,7 +286,7 @@ extern "C" __attribute__((visibility("default"))) id m2v_create_device(void)
 		m2v_log("device %s in %.0f ms (loader %s, cache %s)", device ? [[device name] UTF8String] : "refused",
 			(CFAbsoluteTimeGetCurrent() - t0) * 1000, self.dli_fname, cache);
 		/* debugging: the frontend's counters every 10 s into m2v.log while /private/var/tmp/m2v-telemetry exists */
-		if (device && access("/private/var/tmp/m2v-telemetry", F_OK) == 0)
+		if (device && access(crimson_switch("telemetry"), F_OK) == 0)
 			dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
 				for (;;) {
 					sleep(10);
@@ -276,7 +299,7 @@ extern "C" __attribute__((visibility("default"))) id m2v_create_device(void)
 					}
 				}
 			});
-		if (strcmp(getprogname(), "SpringBoard") == 0 && access("/private/var/tmp/m2v-sbkeepicons", F_OK) == 0)
+		if (strcmp(getprogname(), "SpringBoard") == 0 && access(crimson_switch("sbkeepicons"), F_OK) == 0)
 			sb_keep_icons(15);
 		if (device && strcmp(getprogname(), "backboardd") != 0)
 			class_replaceMethod(object_getClass(device), sel_registerName("supportsExtendedXR10Formats"),

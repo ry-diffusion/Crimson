@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // crimson_probe: the metal2vulkan trial device (libcrimson.dylib) outside any system process. Opens it, fills a buffer with a blit,
 // clears a texture over an IOSurface (the dma-buf import) through a render pass, and reads both back.
-//   /var/root/m2v_probe            (log lines also in /private/var/tmp/m2v.log when that file exists)
+//   /var/root/m2v_probe            (log lines also in /private/var/tmp/crimson.log when that file exists)
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <Metal/Metal.h>
@@ -21,11 +21,11 @@ main(void)
 {
    @autoreleasepool {
       const char *lib = getenv("CRIMSON_LIB");   // another build of libcrimson to A/B in the same boot
-      void *h = dlopen(lib ? lib : "/usr/local/lib/bgmtl/libcrimson.dylib", RTLD_NOW);
+      void *h = dlopen(lib ? lib : "/usr/local/lib/crimson/libcrimson.dylib", RTLD_NOW);
       if (!h) { printf("dlopen: %s\n", dlerror()); return 1; }
       id (*create)(void) = (id(*)(void))dlsym(h, "m2v_create_device");
       id<MTLDevice> dev = create ? create() : nil;
-      printf("device: %s\n", dev ? [[dev name] UTF8String] : "refused (see /private/var/tmp/m2v.log)");
+      printf("device: %s\n", dev ? [[dev name] UTF8String] : "refused (see /private/var/tmp/crimson.log)");
       if (!dev) return 1;
       id<MTLCommandQueue> q = [dev newCommandQueue];
       // audit: _MTLDevice methods the device class does not override (a call to one runs Apple's base version, often nil)
