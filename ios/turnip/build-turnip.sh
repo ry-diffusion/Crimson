@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
 # Turnip (Mesa's Vulkan driver for Adreno) for Crimson on iOS arm64e: stock Mesa 26.2.5 plus patches/mesa-26.2.5-turnip-ios.patch (iOS build
-# and Mach-O fixes, the msm kernel backend over Bergamota's libdrm stand-in gpu/freedreno-sweet, ir3 fixes, the program-state pointer).
+# and Mach-O fixes, the msm kernel backend over Bergamota's libdrm stand-in gpu/freedreno-bergamota, ir3 fixes, the program-state pointer).
 # Moved from Chlorophyll's turnip/build-turnip.sh on 2026-11-26 without the AIR frontend and Chlorophyll's runtime: libcrimson only uses the
 # Vulkan ICD (vk_icdGetInstanceProcAddr).
 #   GPU_METAL_WORK=<work dir> BERGAMOTA=<ios-beryllium checkout> ios/turnip/build-turnip.sh [OUTDIR]     (default target/ios/out)
@@ -27,12 +27,12 @@ if [ ! -d mesa ]; then
   git clone -q --shared "$MESA" mesa
   git -C mesa apply "$R/ios/turnip/patches/mesa-26.2.5-turnip-ios.patch"
 fi
-"$BG/gpu/freedreno-sweet/build.sh" "$D/drm-ios" >/dev/null
+"$BG/gpu/freedreno-bergamota/build.sh" "$D/drm-ios" >/dev/null
 mkdir -p pc-ios drm-ios-link
 cp drm-ios/libdrm.2.arm64e.dylib drm-ios-link/libdrm.2.dylib; ln -sf libdrm.2.dylib drm-ios-link/libdrm.dylib
 cat > pc-ios/libdrm.pc <<EOP
 Name: libdrm
-Description: Bergamota libdrm stand-in (gpu/freedreno-sweet)
+Description: Bergamota libdrm stand-in (gpu/freedreno-bergamota)
 Version: 2.4.124
 Cflags: -I$LIBDRM/include/drm -I$LIBDRM
 Libs: -L$D/drm-ios-link -ldrm

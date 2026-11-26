@@ -49,7 +49,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// The size of a pooled block, at most the device's `maxMemoryAllocationSize`. SweetMetal2: 8 MB, not 64: the A640's
+/// The size of a pooled block, at most the device's `maxMemoryAllocationSize`. BergamotaMetal2: 8 MB, not 64: the A640's
 /// kernel backs every block with RAM at once, and each process paid 64 MB per memory class it touched.
 pub(super) const BLOCK_BYTES: u64 = 16 << 20;   // Chlorophyll: 16 MB, so an 828x1792 BGRA8 target (5.9 MB) is pooled, not dedicated
 

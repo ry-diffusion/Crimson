@@ -6,8 +6,8 @@ index 5f19ef9..bc14e62 100644
  with_any_opengl = with_opengl or with_gles1 or with_gles2
  
  system_has_kms_drm = ['openbsd', 'netbsd', 'freebsd', 'gnu/kfreebsd', 'dragonfly', 'linux', 'sunos', 'android', 'managarm'].contains(host_machine.system())
-+# Chlorophyll: iOS has no DRM, but Turnip's msm backend runs over Bergamota's libdrm stand-in (gpu/freedreno-sweet), which turns the
-+# msm requests into SweetAdrenoUserClient calls
++# Chlorophyll: iOS has no DRM, but Turnip's msm backend runs over Bergamota's libdrm stand-in (gpu/freedreno-bergamota), which turns the
++# msm requests into BergamotaAdrenoUserClient calls
 +if host_machine.system() == 'darwin' and get_option('vulkan-drivers').contains('freedreno')
 +  system_has_kms_drm = true
 +endif
@@ -385,7 +385,7 @@ index ab27798..2268451 100644
  
     if (reserve) {
 +#ifdef __APPLE__
-+      sweet_drm_munmap(bo->map, bo->size);   /* Chlorophyll: release the IOKit mapping first */
++      bergamota_drm_munmap(bo->map, bo->size);   /* Chlorophyll: release the IOKit mapping first */
 +#endif
        void *map = mmap(bo->map, bo->size, PROT_NONE,
                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
@@ -394,7 +394,7 @@ index ab27798..2268451 100644
                            "Failed to replace mapping with reserved memory");
     } else {
 +#ifdef __APPLE__
-+      sweet_drm_munmap(bo->map, bo->size);   /* Chlorophyll: IOKit mapping (libdrm stand-in) */
++      bergamota_drm_munmap(bo->map, bo->size);   /* Chlorophyll: IOKit mapping (libdrm stand-in) */
 +#else
        munmap(bo->map, bo->size);
 +#endif
@@ -410,13 +410,13 @@ index 4c2bf6a..b53b28c 100644
  #include "vulkan/vulkan_core.h"
  
 +#ifdef __APPLE__
-+/* Chlorophyll: BO maps are IOConnectMapMemory64 mappings made by Bergamota's libdrm stand-in (gpu/freedreno-sweet) */
++/* Chlorophyll: BO maps are IOConnectMapMemory64 mappings made by Bergamota's libdrm stand-in (gpu/freedreno-bergamota) */
 +#ifdef __cplusplus
 +extern "C" {
 +#endif
-+void *sweet_drm_mmap(int fd, size_t len, uint64_t off);
-+int sweet_drm_munmap(void *addr, size_t len);
-+int64_t sweet_drm_prime_size(int prime_fd);
++void *bergamota_drm_mmap(int fd, size_t len, uint64_t off);
++int bergamota_drm_munmap(void *addr, size_t len);
++int64_t bergamota_drm_prime_size(int prime_fd);
 +#ifdef __cplusplus
 +}
 +#endif
@@ -434,7 +434,7 @@ index 84ab61f..78fa54c 100644
        .flags = 0
     };
 +#ifdef __APPLE__
-+   /* Chlorophyll (iOS, SweetAdreno): the kernel leaves an unmapped guard page after every BO, where Linux's msm maps BOs
++   /* Chlorophyll (iOS, BergamotaAdreno): the kernel leaves an unmapped guard page after every BO, where Linux's msm maps BOs
 +    * back to back. The GPU's sequential readers (instruction prefetch past a shader's end, vertex and texture fetch, ...)
 +    * may run a little past the end of a BO; here that is an SMMU fault and a GPU recovery (SpringBoard, 2026-10-26: reads
 +    * at the first byte of the page after a BO). One page of slack per BO, which the BO's own size does not include. */
@@ -449,7 +449,7 @@ index 84ab61f..78fa54c 100644
  
 +#ifdef __APPLE__
 +   /* Chlorophyll: a "prime fd" of the libdrm stand-in (an IOSurface made a BO by SURFACE_BO) knows its size there */
-+   off_t real_size = (off_t)sweet_drm_prime_size(prime_fd);
++   off_t real_size = (off_t)bergamota_drm_prime_size(prime_fd);
 +#else
     /* lseek() to get the real size */
     off_t real_size = lseek(prime_fd, 0, SEEK_END);
@@ -463,11 +463,11 @@ index 84ab61f..78fa54c 100644
        return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
  
 +#ifdef __APPLE__
-+   /* Chlorophyll: a BO map is an IOConnectMapMemory64 mapping made by the libdrm stand-in (gpu/freedreno-sweet), which
++   /* Chlorophyll: a BO map is an IOConnectMapMemory64 mapping made by the libdrm stand-in (gpu/freedreno-bergamota), which
 +    * cannot be placed at a fixed address */
 +   if (placed_addr != NULL)
 +      return vk_error(dev, VK_ERROR_MEMORY_MAP_FAILED);
-+   void *map = sweet_drm_mmap(dev->fd, bo->size, offset);
++   void *map = bergamota_drm_mmap(dev->fd, bo->size, offset);
 +#else
     /* TODO: Should we use the wrapper os_mmap() like Freedreno does? */
     void *map = mmap(placed_addr, bo->size, PROT_READ | PROT_WRITE,
@@ -482,7 +482,7 @@ index 84ab61f..78fa54c 100644
     if (bo->map) {
        TU_RMV(bo_unmap, dev, bo);
 +#ifdef __APPLE__
-+      sweet_drm_munmap(bo->map, bo->size);   /* Chlorophyll: IOKit mapping (libdrm stand-in) */
++      bergamota_drm_munmap(bo->map, bo->size);   /* Chlorophyll: IOKit mapping (libdrm stand-in) */
 +#else
        munmap(bo->map, bo->size);
 +#endif

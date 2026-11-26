@@ -65,7 +65,7 @@ static uint64_t gBlackRegionSamples[5];
 static dispatch_queue_t gDrawablePresentQueue;
 // 0169 (kernel patch of the same number): in backboardd, a commit that draws into IOSurfaces returns only once the
 // runtime has submitted it to the GPU, so CoreAnimation's next IOMobileFramebuffer swap finds the frame's drawing
-// already on the ring (the display's blit is queued behind it). Boot-arg sweetmtlsyncsubmit=1 turns it on; off by default.
+// already on the ring (the display's blit is queued behind it). Boot-arg bergamotamtlsyncsubmit=1 turns it on; off by default.
 static std::atomic<uint64_t> gSyncSubmitWaits;
 // 0188: surfaces that already held another process's picture when this process imported them (the "seen here" probe
 // found content): every use of one in an encoder is logged (first 80), whatever the shader.
@@ -115,7 +115,7 @@ static bool syncSubmitEnabled(void) {
  dispatch_once(&once,^{
   if(strcmp(getprogname(),"backboardd")!=0)return;
   char args[1024]={};size_t size=sizeof(args)-1;
-  if(sysctlbyname("kern.bootargs",args,&size,NULL,0)==0)on=strstr(args,"sweetmtlsyncsubmit=1")!=NULL;
+  if(sysctlbyname("kern.bootargs",args,&size,NULL,0)==0)on=strstr(args,"bergamotamtlsyncsubmit=1")!=NULL;
  });
  return on;
 }
@@ -160,7 +160,7 @@ static void noteFormat(uint32_t format,bool made) {
 // _MTLLibrary keeps the platform compiler's finished metallib here. On iOS 16, the public Metal API can compile
 // MSL but does not expose those bytes. The bridge consumes AIR/metallib, so use this private accessor after asking
 // the inherited _MTLDevice implementation to compile; keep the private dependency local to this adapter.
-@interface NSObject (SweetCompiledLibraryData)
+@interface NSObject (BergamotaCompiledLibraryData)
 - (NSData *)libraryDataContents;
 @end
 
@@ -340,22 +340,22 @@ NB_RESOURCE_SPI
 // and its retained surface prevent object/address reuse during a hit. A new
 // mapping, allocation identity or size needs a separate import; ordinary
 // caller-owned no-copy buffers do not enter this cache.
-// Chlorophyll: the libdrm stand-in's IOSurface import (gpu/freedreno-sweet SWEET_GPU_SEL_SURFACE_BO; chl_vk.c's struct
-// chl_sbo, the first fields of the kernel's struct sweet_gpu_surface_bo). The dma-buf is the surface's whole BO from its
+// Chlorophyll: the libdrm stand-in's IOSurface import (gpu/freedreno-bergamota BERGAMOTA_GPU_SEL_SURFACE_BO; chl_vk.c's struct
+// chl_sbo, the first fields of the kernel's struct bergamota_gpu_surface_bo). The dma-buf is the surface's whole BO from its
 // base address, so only a request from that page can be answered; one at an offset (a second plane) is refused and the
 // runtime shadows that texture. Client memory of another process (WRAPPED) is mapped read-only with no tail page after it,
 // where the GPU's over-fetch faults (chl's SMMU faults of 2026-10-26): refused too.
 struct ChlSbo {uint32_t surface_id,handle;uint64_t size,iova;uint32_t offset,bytes_per_row,width,height,pixel_format,planes,flags;uint8_t rest[128-52];};
 static int chlSurfacePrime(void *ctx,void *start,uint64_t length,uint64_t granule,uint64_t *chunk) {
  (void)granule;
- static int (*prime)(int,ChlSbo *)=(int (*)(int,ChlSbo *))dlsym(RTLD_DEFAULT,"sweet_drm_surface_prime");
- static int (*gemClose)(int,uint32_t)=(int (*)(int,uint32_t))dlsym(RTLD_DEFAULT,"sweet_drm_gem_close");
- static int (*boSync)(int,uint32_t,uint64_t,uint64_t)=(int (*)(int,uint32_t,uint64_t,uint64_t))dlsym(RTLD_DEFAULT,"sweet_drm_bo_sync");
+ static int (*prime)(int,ChlSbo *)=(int (*)(int,ChlSbo *))dlsym(RTLD_DEFAULT,"bergamota_drm_surface_prime");
+ static int (*gemClose)(int,uint32_t)=(int (*)(int,uint32_t))dlsym(RTLD_DEFAULT,"bergamota_drm_gem_close");
+ static int (*boSync)(int,uint32_t,uint64_t,uint64_t)=(int (*)(int,uint32_t,uint64_t,uint64_t))dlsym(RTLD_DEFAULT,"bergamota_drm_bo_sync");
  IOSurfaceRef sf=(IOSurfaceRef)ctx;
  const uintptr_t page=(uintptr_t)getpagesize();
  const uintptr_t base=(uintptr_t)IOSurfaceGetBaseAddress(sf)&~(page-1);
  if((uintptr_t)start!=base){NBLOG(@"chl: IOSurface %u: pages at +0x%lx asked (a plane past the first): shadowed",IOSurfaceGetID(sf),(unsigned long)((uintptr_t)start-base));return -1;}
- if(!prime){NBLOG(@"chl: no sweet_drm_surface_prime");return -1;}
+ if(!prime){NBLOG(@"chl: no bergamota_drm_surface_prime");return -1;}
  ChlSbo sb={};
  const int fd=prime((int)IOSurfaceGetID(sf),&sb);
  if(fd<0){NBLOG(@"chl: the kernel would not describe IOSurface %u",IOSurfaceGetID(sf));return -1;}
@@ -606,14 +606,14 @@ static NBBuffer *surfaceBuffer(IOSurfaceRef surface,void *base,size_t bytes) {
  }
  return buffer;
 }
-// guacamole: SweetSurface exposes the system compositor's private '_RB4' surface as one-plane, four-byte pixels. QuartzCore
+// guacamole: BergamotaSurface exposes the system compositor's private '_RB4' surface as one-plane, four-byte pixels. QuartzCore
 // asks for RGB8_444_2P (542), but that Metal format describes two YCbCr-like planes and cannot import this backing. The
 // _RB4 IOSurface has BGRA8 row storage, so treat that format as BGRA8 for textures and pipeline attachments together.
 // The kernel also stores 10-bit wide-colour formats ('w30r', 'b3a8' with its alpha plane, ...) as one-plane BGRA8, which
 // backboardd composites as BGRA8 (the panel is 8-bit sRGB). QuartzCore still asks the 10-bit XR pixel formats (550/551
 // RGB10A8_2P_XR10, 552/553 BGRA10_XR, 554/555 BGR10_XR; 550 is private and metal2vulkan has none): every texture and
 // every pipeline attachment of them is BGRA8Unorm(_sRGB), so they agree with each other
-static uint64_t sweetNarrow(NSUInteger format) {
+static uint64_t bergamotaNarrow(NSUInteger format) {
  if(format==542)return MTLPixelFormatBGRA8Unorm;
  return format>=550 && format<=555?((format&1)?MTLPixelFormatBGRA8Unorm_sRGB:MTLPixelFormatBGRA8Unorm):format;
 }
@@ -623,7 +623,7 @@ static uint64_t sweetNarrow(NSUInteger format) {
 static bool chlMsaa1() {static const bool on=[]{const char *v=getenv("CHL_M2V_MSAA1");return v && (!strcmp(v,"1") || strstr(v,getprogname()));}();return on;}   // "1" or a list of process names
 static bool textureDescriptor(MTLTextureDescriptor *d,NmbTextureDescriptor *out) {
  if(!d)return false;
- *out={(uint64_t)d.textureType,sweetNarrow(d.pixelFormat),d.width,d.height,d.depth,d.mipmapLevelCount,d.sampleCount,d.arrayLength,(uint64_t)d.usage,(uint64_t)d.resourceOptions};
+ *out={(uint64_t)d.textureType,bergamotaNarrow(d.pixelFormat),d.width,d.height,d.depth,d.mipmapLevelCount,d.sampleCount,d.arrayLength,(uint64_t)d.usage,(uint64_t)d.resourceOptions};
  // RenderBox reads a grey and alpha glyph layer (RG8) through RRRG: without it an icon's glyph was yellow in an opaque black box.
  const MTLTextureSwizzleChannels z=d.swizzle;
  if(z.red!=MTLTextureSwizzleRed || z.green!=MTLTextureSwizzleGreen || z.blue!=MTLTextureSwizzleBlue || z.alpha!=MTLTextureSwizzleAlpha){
@@ -673,7 +673,7 @@ static bool textureDescriptor(MTLTextureDescriptor *d,NmbTextureDescriptor *out)
 // 0205: the memory a texture takes (MTLResource; PhotosPosterProvider asked next: "MISSING NBTexture -allocatedSize").
 // Over a buffer/surface: its rows as laid out; otherwise texels x bytes a texel (by format) over the mip chain, times
 // depth, slices and samples. An estimate where the runtime pads; what callers use it for is accounting.
-static NSUInteger sweetBytesPerTexel(NSUInteger f) {
+static NSUInteger bergamotaBytesPerTexel(NSUInteger f) {
  if(f==250)return 2;                          // Depth16Unorm
  if(f==252||f==255)return 4;                  // Depth32Float, Depth24Unorm_Stencil8
  if(f==253)return 1;                          // Stencil8
@@ -692,7 +692,7 @@ static NSUInteger sweetBytesPerTexel(NSUInteger f) {
  const NSUInteger slices=MAX((NSUInteger)d.array_length,(NSUInteger)1)*MAX((NSUInteger)d.samples,(NSUInteger)1)*
                          (d.type==5||d.type==6?6:1);           // cube / cube array: six faces
  if(_rowBytes && _buffer)return (NSUInteger)_rowBytes*MAX((NSUInteger)d.height,(NSUInteger)1)*MAX((NSUInteger)d.depth,(NSUInteger)1)*slices;
- const NSUInteger bpp=sweetBytesPerTexel((NSUInteger)d.format);
+ const NSUInteger bpp=bergamotaBytesPerTexel((NSUInteger)d.format);
  NSUInteger total=0;
  for(NSUInteger l=0;l<MAX((NSUInteger)d.levels,(NSUInteger)1);l++)
   total+=MAX((NSUInteger)d.width>>l,(NSUInteger)1)*MAX((NSUInteger)d.height>>l,(NSUInteger)1)*MAX((NSUInteger)d.depth>>l,(NSUInteger)1)*bpp;
@@ -1133,7 +1133,7 @@ static void waitForResource(id resource) {
 // time). Each call keeps its encoder (and the objects it names) alive and its handle as it was when enqueued.
 static bool chlDeferOn() {static const bool on=access(crimson_switch("defer"),F_OK)==0;return on;}
 static char gChlWorkerKey;
-// Chlorophyll: xnu 1022's swap gate (kern.sweet_fb_gate_committed / _submitted). Async commits are made only in backboardd and
+// Chlorophyll: xnu 1022's swap gate (kern.bergamota_fb_gate_committed / _submitted). Async commits are made only in backboardd and
 // only when the kernel has the gate: its framebuffer swap must not scan a frame whose GPU work is not submitted yet, and other
 // processes' surfaces are read by backboardd as soon as they commit.
 static int gChlGateMib[2][4];static size_t gChlGateMibLen[2];
@@ -1143,8 +1143,8 @@ static bool chlGateMibs() {
  dispatch_once(&once,^{
   gChlGateMibLen[0]=gChlGateMibLen[1]=4;
   ok=strcmp(getprogname(),"backboardd")==0 &&
-     sysctlnametomib("kern.sweet_fb_gate_committed",gChlGateMib[0],&gChlGateMibLen[0])==0 &&
-     sysctlnametomib("kern.sweet_fb_gate_submitted",gChlGateMib[1],&gChlGateMibLen[1])==0;
+     sysctlnametomib("kern.bergamota_fb_gate_committed",gChlGateMib[0],&gChlGateMibLen[0])==0 &&
+     sysctlnametomib("kern.bergamota_fb_gate_submitted",gChlGateMib[1],&gChlGateMibLen[1])==0;
   // the kernel's numbers outlive a backboardd that died (writes only raise them): go on from its last commit, and count that
   // commit as submitted, or the gate stays shut and every swap waits out the kernel's 100 ms cap
   uint64_t last=0;size_t n=sizeof last;
@@ -1285,7 +1285,7 @@ static bool chlPassCuttable(MTLRenderPassDescriptor *d,const NmbRenderPassDescri
 // before that call (Metal ends an encoder before the next one, a commit or a signal). shortcut: an encoder released without
 // endEncoding leaks its held calls (they retain it); Metal forbids that
 // fps meter: the batches' wall time (mach ticks), their thread CPU time (ns) and the CPU each batch started on (0 is the A55
-// with sweetcores=0xf1; TPIDRRO_EL0's low bits read 0 on every batch on this kernel, 2026-11-25)
+// with bergamotacores=0xf1; TPIDRRO_EL0's low bits read 0 on every batch on this kernel, 2026-11-25)
 static std::atomic<uint64_t> gChlBatchWall{0},gChlBatchCpuNs{0},gChlBatchOn[8];
 static bool chlCpuMeterOn() {static const bool on=access(crimson_switch("cpumeter"),F_OK)==0;return on;}   // two syscalls a batch
 static inline unsigned chlCpuNumber() {size_t n=0;return pthread_cpu_number_np(&n)==0?(unsigned)(n&7):0;}
@@ -1369,7 +1369,7 @@ static bool chlBatchOn() {static const bool on=access(crimson_switch("batch"),F_
  if(buffer && (__bridge void *)buffer!=_lastOwner[0]){[_commandBuffer.resourceOwners addObject:buffer];_lastOwner[0]=(__bridge void *)buffer;}   // 0242
  {[self nbRun:[=,self_=self]()->bool{NmbEncoder *h_=self_.handle;if(!h_)return false;return nmb_encoder_set_buffer(h_,stage,buffer?[(NBBuffer *)buffer handle]:nullptr,offset,(uint32_t)index);} what:"setBuffer"];}
 }
-static void sweetYCbCrRefresh(id<MTLTexture> t);   // 0257b
+static void bergamotaYCbCrRefresh(id<MTLTexture> t);   // 0257b
 - (void)texture:(id<MTLTexture>)texture index:(NSUInteger)index stage:(uint32_t)stage {
  if(texture && ![(id)texture isKindOfClass:[NBTexture class]]){[_commandBuffer refuse:@"foreign texture"];return;}
  if(texture && (__bridge void *)texture!=_lastOwner[1]){   // 0242: the same texture again: already owned
@@ -1387,7 +1387,7 @@ static void sweetYCbCrRefresh(id<MTLTexture> t);   // 0257b
     t.parent?@" view":@"",t.label?:@"");
   }
  }
- if(texture)sweetYCbCrRefresh(texture);   // 0257b
+ if(texture)bergamotaYCbCrRefresh(texture);   // 0257b
  {[self nbRun:[=,self_=self]()->bool{NmbEncoder *h_=self_.handle;if(!h_)return false;return nmb_encoder_set_texture(h_,stage,texture?[(NBTexture *)texture handle]:nullptr,(uint32_t)index);} what:"setTexture"];}
  if(!traceOn())return;
  // 0188: a watched surface, any stage: the encoder, its pipeline (render) and target, where it is bound
@@ -1466,7 +1466,7 @@ static void sweetYCbCrRefresh(id<MTLTexture> t);   // 0257b
 @end
 // 0261: what a compute kernel's IOSurface textures hold, read by the CPU on an 8x8 grid: inputs when bound (at
 // dispatch), outputs (ShaderWrite) once the command buffer completed. RGBA8/BGRA8, RGBA16F, R16F, R8. Tracing only.
-static NSString *sweetSurfaceSample(id<MTLTexture> t) {
+static NSString *bergamotaSurfaceSample(id<MTLTexture> t) {
  IOSurfaceRef sf=[(NBTexture *)t surface];
  if(!sf)return @"no surface";
  const MTLPixelFormat f=t.pixelFormat;
@@ -1538,10 +1538,10 @@ static std::atomic<uint32_t> gComputeSamples{0};
     if(t.usage & MTLTextureUsageShaderWrite){
      NSString *head=[NSString stringWithFormat:@"compute output t%@ surf %#x %lux%lu fmt %lu (%@)",k,IOSurfaceGetID([(NBTexture *)t surface]),
       (unsigned long)t.width,(unsigned long)t.height,(unsigned long)t.pixelFormat,[kernel substringToIndex:MIN((NSUInteger)60,kernel.length)]];
-     [self.commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>){NBLOG(@"native-metal: %@: %@",head,sweetSurfaceSample(t));}];
+     [self.commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>){NBLOG(@"native-metal: %@: %@",head,bergamotaSurfaceSample(t));}];
     }else{
      NBLOG(@"native-metal: compute input t%@ surf %#x %lux%lu fmt %lu: %@",k,IOSurfaceGetID([(NBTexture *)t surface]),(unsigned long)t.width,
-      (unsigned long)t.height,(unsigned long)t.pixelFormat,sweetSurfaceSample(t));
+      (unsigned long)t.height,(unsigned long)t.pixelFormat,bergamotaSurfaceSample(t));
     }
    }
   }
@@ -1877,8 +1877,8 @@ static void blitOptionNote(MTLBlitOption options,const char *what) {
 // own (the "shadow", which keeps what CA drew, so loads and partial redraws work); every command buffer that rendered
 // into it ends with one full-screen pass that turns it into the surface (a portrait texture over the surface).
 // Direction: counter-clockwise by default (a landscape image's top row goes to the surface's left column; clockwise
-// showed Angry Birds Classic upside down); `touch /var/local/sweet-rotate-cw` turns it the other way,
-// `touch /var/local/sweet-norotate` refuses as before. Both are read when a shadow is made (after a respring).
+// showed Angry Birds Classic upside down); `touch /var/local/bergamota-rotate-cw` turns it the other way,
+// `touch /var/local/bergamota-norotate` refuses as before. Both are read when a shadow is made (after a respring).
 static NSString *const kRotationSource=@"#include <metal_stdlib>\n"
  "using namespace metal;\n"
  "struct RotV { float4 position [[position]]; };\n"
@@ -1906,7 +1906,7 @@ static id<MTLRenderPipelineState> rotationPipeline(MTLPixelFormat format,unsigne
   if(!library){failed=true;NBLOG(@"native-metal: rotated framebuffer: the turning shader does not compile: %@",error);return nil;}
  }
  MTLRenderPipelineDescriptor *d=[MTLRenderPipelineDescriptor new];
- d.label=@"sweet rotated framebuffer";
+ d.label=@"bergamota rotated framebuffer";
  d.vertexFunction=[library newFunctionWithName:@"rot_v"];
  d.fragmentFunction=[library newFunctionWithName:mode?@"rot_ccw":@"rot_cw"];
  d.colorAttachments[0].pixelFormat=format;
@@ -1926,9 +1926,9 @@ static NBTexture *rotationShadowOf(id t) {
  return nil;
 }
 static id<MTLTexture> rotatedSurfaceTexture(id device,MTLTextureDescriptor *d,IOSurfaceRef surface) {
- if(access("/var/local/sweet-norotate",F_OK)==0)return nil;
+ if(access("/var/local/bergamota-norotate",F_OK)==0)return nil;
  // counter-clockwise by default: clockwise showed Angry Birds Classic upside down (user, 2026-11-09)
- const unsigned mode=access("/var/local/sweet-rotate-cw",F_OK)==0?0:1;
+ const unsigned mode=access("/var/local/bergamota-rotate-cw",F_OK)==0?0:1;
  long spi=-1;
  if([d respondsToSelector:NSSelectorFromString(@"rotation")]){@try{spi=[[d valueForKey:@"rotation"] longValue];}@catch(NSException *e){}}
  static std::mutex lock;static NSMutableDictionary *shadows;static std::atomic<uint32_t> said{0};
@@ -2719,7 +2719,7 @@ template <typename T> static T failWith(NSError **error,NSString *what,T value) 
 // CA_DISABLE_GENERIC_SHADERS, CA_FORCE_GENERIC_SHADERS and CA_DISABLE_PRECOMPILED_PIPELINES debug options (ca_debug_options +0x55..0x57,
 // read only where dladdr places that address in QuartzCore).
 static std::string quartzCoreCallers() {
- /* SweetMetal2 (iOS 16.7): only the return addresses into QuartzCore, as offsets from its header. UniXNU's version also read
+ /* BergamotaMetal2 (iOS 16.7): only the return addresses into QuartzCore, as offsets from its header. UniXNU's version also read
   * MetalContext fields and debug bytes at iPadOS 17.7.11 (21H461) offsets, which mean nothing here. */
  void *frames[24];const int n=backtrace(frames,24);
  std::string out="qc";char item[32];unsigned kept=0;
@@ -2765,7 +2765,7 @@ static void journalRenderPipeline(MTLRenderPipelineDescriptor *d,uint64_t began,
  line+=" label=";line+=d.label.length?d.label.UTF8String:"-";
  for(unsigned i=0;i<8;i++) {
   MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[i];if(a.pixelFormat==MTLPixelFormatInvalid)continue;
-  snprintf(head,sizeof head," c%u=%lu:%lu:%d:%lu:%lu:%lu:%lu:%lu:%lu",i,(unsigned long)sweetNarrow(a.pixelFormat),(unsigned long)a.writeMask,(int)a.blendingEnabled,
+  snprintf(head,sizeof head," c%u=%lu:%lu:%d:%lu:%lu:%lu:%lu:%lu:%lu",i,(unsigned long)bergamotaNarrow(a.pixelFormat),(unsigned long)a.writeMask,(int)a.blendingEnabled,
       (unsigned long)a.sourceRGBBlendFactor,(unsigned long)a.destinationRGBBlendFactor,(unsigned long)a.rgbBlendOperation,(unsigned long)a.sourceAlphaBlendFactor,
       (unsigned long)a.destinationAlphaBlendFactor,(unsigned long)a.alphaBlendOperation);
   line+=head;
@@ -2809,7 +2809,7 @@ static bool renderDescriptor(MTLRenderPipelineDescriptor *d,NmbRenderPipelineDes
  }
  for(unsigned i=0;i<8;i++) {
   MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[i];
-  p->colors[i]={sweetNarrow(a.pixelFormat),(uint64_t)a.writeMask,(uint64_t)a.blendingEnabled,(uint64_t)a.sourceRGBBlendFactor,(uint64_t)a.destinationRGBBlendFactor,
+  p->colors[i]={bergamotaNarrow(a.pixelFormat),(uint64_t)a.writeMask,(uint64_t)a.blendingEnabled,(uint64_t)a.sourceRGBBlendFactor,(uint64_t)a.destinationRGBBlendFactor,
       (uint64_t)a.rgbBlendOperation,(uint64_t)a.sourceAlphaBlendFactor,(uint64_t)a.destinationAlphaBlendFactor,(uint64_t)a.alphaBlendOperation};
  }
  p->depth_format=d.depthAttachmentPixelFormat;p->stencil_format=d.stencilAttachmentPixelFormat;p->samples=chlMsaa1()?1:d.rasterSampleCount;
@@ -2833,7 +2833,7 @@ static bool renderDescriptor(MTLRenderPipelineDescriptor *d,NmbRenderPipelineDes
 @property(nonatomic) MTLHeapType heapType;
 @end
 // 0211: a full automatic heap's resources come from the device (log the first few, and any refusal).
-static void sweetHeapOverflowNote(bool made,NSString *why) {
+static void bergamotaHeapOverflowNote(bool made,NSString *why) {
  static std::atomic<unsigned> notes{0};
  if(!made)NBLOG(@"native-metal: heap full (%@) and the device refused the resource too: %@",why,lastError());
  else if(notes.fetch_add(1)<3)NBLOG(@"native-metal: heap full (%@): resource made outside the heap",why);
@@ -2861,7 +2861,7 @@ static void sweetHeapOverflowNote(bool made,NSString *why) {
  if(!handle && offset==UINT64_MAX){
   NSString *why=lastError();
   handle=nmb_buffer_new(gDevice,length,options,nullptr);
-  sweetHeapOverflowNote(handle!=nullptr,why);
+  bergamotaHeapOverflowNote(handle!=nullptr,why);
  }
  if(!handle){NBLOG(@"native-metal: heap buffer refused: %@",lastError());return nil;}
  NBBuffer *buffer=[NBBuffer new];buffer.handle=handle;buffer.options=options;buffer.parentHeap=(id<MTLHeap>)self;
@@ -2883,7 +2883,7 @@ static void sweetHeapOverflowNote(bool made,NSString *why) {
  if(!handle && offset==UINT64_MAX){
   NSString *why=lastError();
   handle=nmb_texture_new(gDevice,&descriptor);
-  sweetHeapOverflowNote(handle!=nullptr,why);
+  bergamotaHeapOverflowNote(handle!=nullptr,why);
  }
  if(!handle){NBLOG(@"native-metal: heap texture refused: %@",lastError());return nil;}
  NBTexture *texture=[NBTexture new];texture.handle=handle;nmb_texture_describe(handle,&descriptor);texture.descriptor=descriptor;
@@ -2962,7 +2962,7 @@ static bool pipelineArchives(NSArray *list,std::vector<NmbBinaryArchive *> &arch
 @interface NBDeviceMethods : NSObject
 @end
 // Bytes of one texel of the uncompressed formats Core Animation and RenderBox use (4 for the rest).
-static uint64_t sweetTexelBytes(MTLPixelFormat f) {
+static uint64_t bergamotaTexelBytes(MTLPixelFormat f) {
  switch((NSUInteger)f) {
  case 1: case 10: case 11: case 12: case 13: case 14: return 1;
  case 20: case 22: case 23: case 24: case 25: case 30: case 32: case 33: case 34: case 40: case 41: case 42: case 43: return 2;
@@ -2971,9 +2971,9 @@ static uint64_t sweetTexelBytes(MTLPixelFormat f) {
  default: return 4;
  }
 }
-typedef struct {uint64_t w[2];} SweetWatermark;   /* AGXTextureLayout's {?=[2Q]} watermark */
+typedef struct {uint64_t w[2];} BergamotaWatermark;   /* AGXTextureLayout's {?=[2Q]} watermark */
 // Block footprint and bytes of the compressed formats the A640 samples (ASTC LDR/sRGB, ETC2/EAC); false for the rest.
-static bool sweetBlock(MTLPixelFormat f, uint32_t *bw, uint32_t *bh, uint32_t *bytes) {
+static bool bergamotaBlock(MTLPixelFormat f, uint32_t *bw, uint32_t *bh, uint32_t *bytes) {
  static const uint8_t astc[][2] = {{4,4},{5,4},{5,5},{6,5},{6,6},{0,0},{8,5},{8,6},{8,8},{10,5},{10,6},{10,8},{10,10},{12,10},{12,12}};
  const NSUInteger n = (NSUInteger)f;
  if((n >= 186 && n <= 200) || (n >= 204 && n <= 218)) {
@@ -2988,21 +2988,21 @@ static bool sweetBlock(MTLPixelFormat f, uint32_t *bw, uint32_t *bh, uint32_t *b
  }
 }
 // Keeps a no-copy texture's memory owner until the texture goes (its deallocator runs then).
-@interface SweetMemoryOwner : NSObject
+@interface BergamotaMemoryOwner : NSObject
 @property(nonatomic,copy) void (^deallocator)(void *,NSUInteger);
 @property(nonatomic) void *bytes;
 @property(nonatomic) NSUInteger length;
 @end
-@implementation SweetMemoryOwner
+@implementation BergamotaMemoryOwner
 - (void)dealloc {if(_deallocator)_deallocator(_bytes,_length);}
 @end
-static char sweetMemoryOwnerKey;
-// SweetMetal2's MTLTextureLayout (Metal SPI: AGXTextureLayout's protocol on Apple's GPUs): a linear layout of `row`-byte rows.
-@interface SweetTextureLayout : NSObject
+static char bergamotaMemoryOwnerKey;
+// BergamotaMetal2's MTLTextureLayout (Metal SPI: AGXTextureLayout's protocol on Apple's GPUs): a linear layout of `row`-byte rows.
+@interface BergamotaTextureLayout : NSObject
 - (instancetype)initWithRow:(uint64_t)row height:(uint64_t)height texel:(uint64_t)texel;
 - (instancetype)initWithBlocks:(uint32_t)bw by:(uint32_t)bh bytes:(uint32_t)bytes width:(uint64_t)width height:(uint64_t)height;
 @end
-@implementation SweetTextureLayout {
+@implementation BergamotaTextureLayout {
  uint64_t _row,_height,_texel;
  uint32_t _bw,_bh;     /* block footprint (1x1 uncompressed); _height and _texel count block rows and block bytes */
 }
@@ -3017,7 +3017,7 @@ static char sweetMemoryOwnerKey;
 - (NSUInteger)size {const uint64_t page=(uint64_t)getpagesize();return (NSUInteger)((_row*_height+page-1)&~(page-1));}
 - (NSUInteger)alignment {return (NSUInteger)getpagesize();}
 - (MTLSize)copyGranularity {return MTLSizeMake(_bw,_bh,1);}
-- (SweetWatermark)watermark {SweetWatermark none={{0,0}};return none;}
+- (BergamotaWatermark)watermark {BergamotaWatermark none={{0,0}};return none;}
 - (void)initializeTextureMemory:(void *)memory {(void)memory;}
 - (void)finalizeTextureMemory:(void *)memory {(void)memory;}
 - (void)copyFromLinearBytes:(const void *)src linearOffset:(NSUInteger)offset linearBytesPerRow:(NSUInteger)srcRow linearBytesPerImage:(NSUInteger)image
@@ -3036,11 +3036,11 @@ static char sweetMemoryOwnerKey;
 }
 @end
 // 0217: see newTextureWithDescriptor:iosurface:plane:. nil when the surface is not as expected (then the runtime's own refusal stands).
-// 0257b: converts a two-plane 4:2:0 surface into an RGBA8 texture of ow x oh (same math as sweetYCbCrTexture). For video
-// frames it is run again at every bind (sweetYCbCrRefresh): CoreAnimation makes one texture per IOSurface and reuses it,
+// 0257b: converts a two-plane 4:2:0 surface into an RGBA8 texture of ow x oh (same math as bergamotaYCbCrTexture). For video
+// frames it is run again at every bind (bergamotaYCbCrRefresh): CoreAnimation makes one texture per IOSurface and reuses it,
 // counting on a live import, but ours is a converted copy, so a pooled decoder surface showed the frame it held when
 // first seen (Safari mp4: the right frame mixed with the first ones and middle ones).
-static bool sweetYCbCrFill(id<MTLTexture> t,IOSurfaceRef surface,size_t ow,size_t oh) {
+static bool bergamotaYCbCrFill(id<MTLTexture> t,IOSurfaceRef surface,size_t ow,size_t oh) {
  const size_t w=IOSurfaceGetWidthOfPlane(surface,0),h=IOSurfaceGetHeightOfPlane(surface,0);
  const size_t cw=IOSurfaceGetWidthOfPlane(surface,1),ch=IOSurfaceGetHeightOfPlane(surface,1);
  if(!w || !h || ow>w || oh>h || cw<(w+1)/2 || ch<(h+1)/2)return false;
@@ -3066,7 +3066,7 @@ static bool sweetYCbCrFill(id<MTLTexture> t,IOSurfaceRef surface,size_t ow,size_
 }
 
 // 0257b: at bind: a converted video frame is converted again from its surface, as long as the surface lives.
-static void sweetYCbCrRefresh(id<MTLTexture> t) {
+static void bergamotaYCbCrRefresh(id<MTLTexture> t) {
  id src=objc_getAssociatedObject(t,"ycbcr-src");
  if(!src)return;
  IOSurfaceRef surface=(__bridge IOSurfaceRef)src;
@@ -3074,10 +3074,10 @@ static void sweetYCbCrRefresh(id<MTLTexture> t) {
  NSNumber *last=objc_getAssociatedObject(t,"ycbcr-seed");
  static const bool always=access("/var/local/mtl2-videocache",F_OK)!=0;   // (the file: only when the seed moves)
  if(!always && last && [last unsignedIntValue]==seed)return;
- if(sweetYCbCrFill(t,surface,t.width,t.height))objc_setAssociatedObject(t,"ycbcr-seed",@(seed),OBJC_ASSOCIATION_RETAIN);
+ if(bergamotaYCbCrFill(t,surface,t.width,t.height))objc_setAssociatedObject(t,"ycbcr-seed",@(seed),OBJC_ASSOCIATION_RETAIN);
 }
 
-static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurfaceRef surface,void *base,size_t allocation) {
+static id<MTLTexture> bergamotaYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurfaceRef surface,void *base,size_t allocation) {
  const size_t w=IOSurfaceGetWidthOfPlane(surface,0),h=IOSurfaceGetHeightOfPlane(surface,0);
  const size_t cw=IOSurfaceGetWidthOfPlane(surface,1),ch=IOSurfaceGetHeightOfPlane(surface,1);
  if(!w || !h || IOSurfaceGetBytesPerElementOfPlane(surface,0)!=1 || IOSurfaceGetBytesPerElementOfPlane(surface,1)!=2 ||
@@ -3139,7 +3139,7 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
   n?ysum/n:0,ymin,ymax,n?cbsum/n:0,n?crsum/n:0,n);
  objc_setAssociatedObject(t,"ycbcr",[NSString stringWithFormat:@"ycbcr surf %#x %zux%zu as RGBA8",IOSurfaceGetID(surface),ow,oh],
   OBJC_ASSOCIATION_RETAIN);   // 0219
- if(!cacheable){   // 0257b: a video frame: converted again at every bind (sweetYCbCrRefresh)
+ if(!cacheable){   // 0257b: a video frame: converted again at every bind (bergamotaYCbCrRefresh)
   objc_setAssociatedObject(t,"ycbcr-src",(__bridge id)surface,OBJC_ASSOCIATION_RETAIN);
   objc_setAssociatedObject(t,"ycbcr-seed",@(seed),OBJC_ASSOCIATION_RETAIN);
  }
@@ -3169,7 +3169,7 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
  if(!d)return result;
  const NSUInteger type=(NSUInteger)d.textureType;
  const NSUInteger slices=MAX(d.arrayLength,(NSUInteger)1)*MAX(d.sampleCount,(NSUInteger)1)*(type==5||type==6?6:1);
- const NSUInteger bpp=sweetBytesPerTexel((NSUInteger)d.pixelFormat);
+ const NSUInteger bpp=bergamotaBytesPerTexel((NSUInteger)d.pixelFormat);
  NSUInteger total=0;
  for(NSUInteger l=0;l<MAX(d.mipmapLevelCount,(NSUInteger)1);l++){
   const NSUInteger w=(MAX(d.width>>l,(NSUInteger)1)+63)&~(NSUInteger)63,h=(MAX(d.height>>l,(NSUInteger)1)+63)&~(NSUInteger)63;
@@ -3210,7 +3210,7 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
 // texels of up to 4 bytes, 128 for 8, 256 for 16: fd6_layout.c), so every such texture was a shadow copied before each use and
 // back after each write -- in backboardd, every frame.
 - (NSUInteger)minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)format {
- const uint64_t texel=sweetTexelBytes(format);
+ const uint64_t texel=bergamotaTexelBytes(format);
  return texel>4?16*texel:64;
 }
 - (NSUInteger)minLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)format {return [(id)self minimumLinearTextureAlignmentForPixelFormat:format];}
@@ -3248,7 +3248,7 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
  for(NSUInteger i=0;i<count;i++)if(resources[i])[held addObject:resources[i]];
  group.resources=held;return group;
 }
-// SweetMetal2: a texture over raw memory, and the layout object for such memory (MTLTextureLayout SPI), in one linear layout of
+// BergamotaMetal2: a texture over raw memory, and the layout object for such memory (MTLTextureLayout SPI), in one linear layout of
 // our choosing that both answer alike: rows of the runtime's required linear pitch, level 0 of a 2D texture, page-aligned
 // memory (it is imported, not copied). Clients ask the layout for size and alignment, allocate, then wrap the memory
 // (RenderBox's drawables; without these: "RBDisplayList: no drawable" and blank widgets). A caller that never asked
@@ -3260,19 +3260,19 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
  // shortcut: not refreshed if the caller writes its bytes later; refresh at commit (as no-copy buffers) if a client does.
  uint32_t cbw=0,cbh=0,cbb=0;
  if(!length && d) {   // length 0: packed rows of blocks or texels (SpringBoard's compressed icon images among them)
-  if(sweetBlock(d.pixelFormat,&cbw,&cbh,&cbb))length=(d.width+cbw-1)/cbw*cbb*((d.height+cbh-1)/cbh);
-  else length=d.width*sweetTexelBytes(d.pixelFormat)*d.height;
+  if(bergamotaBlock(d.pixelFormat,&cbw,&cbh,&cbb))length=(d.width+cbw-1)/cbw*cbb*((d.height+cbh-1)/cbh);
+  else length=d.width*bergamotaTexelBytes(d.pixelFormat)*d.height;
  }
- if(bytes && d && d.textureType==MTLTextureType2D && d.mipmapLevelCount<=1 && d.arrayLength<=1 && d.sampleCount<=1 && !sweetBlock(d.pixelFormat,&cbw,&cbh,&cbb)) {
-  const NSUInteger texel=sweetTexelBytes(d.pixelFormat),row=length?length/MAX(d.height,(NSUInteger)1):d.width*texel;
+ if(bytes && d && d.textureType==MTLTextureType2D && d.mipmapLevelCount<=1 && d.arrayLength<=1 && d.sampleCount<=1 && !bergamotaBlock(d.pixelFormat,&cbw,&cbh,&cbb)) {
+  const NSUInteger texel=bergamotaTexelBytes(d.pixelFormat),row=length?length/MAX(d.height,(NSUInteger)1):d.width*texel;
   if(texel && row>=d.width*texel) {
    MTLTextureDescriptor *own=[d copy];
    own.storageMode=MTLStorageModeShared;
    id<MTLTexture> texture=[(id<MTLDevice>)self newTextureWithDescriptor:own];
    if(!texture)return nil;
    [texture replaceRegion:MTLRegionMake2D(0,0,d.width,d.height) mipmapLevel:0 withBytes:bytes bytesPerRow:row];
-   SweetMemoryOwner *owner=[SweetMemoryOwner new];owner.deallocator=deallocator;owner.bytes=bytes;owner.length=length?length:row*d.height;
-   objc_setAssociatedObject(texture,&sweetMemoryOwnerKey,owner,OBJC_ASSOCIATION_RETAIN);
+   BergamotaMemoryOwner *owner=[BergamotaMemoryOwner new];owner.deallocator=deallocator;owner.bytes=bytes;owner.length=length?length:row*d.height;
+   objc_setAssociatedObject(texture,&bergamotaMemoryOwnerKey,owner,OBJC_ASSOCIATION_RETAIN);
    return texture;
   }
  }
@@ -3281,7 +3281,7 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
   return nil;
  }
  uint32_t bw=0,bh=0,bb=0;
- if(sweetBlock(d.pixelFormat,&bw,&bh,&bb)) {
+ if(bergamotaBlock(d.pixelFormat,&bw,&bh,&bb)) {
   /* compressed: no linear texture of it exists, so a texture of its own, filled from the caller's blocks (packed rows) */
   const NSUInteger row=(d.width+bw-1)/bw*bb,rows=(d.height+bh-1)/bh;
   if(row*rows>length){NBLOG(@"native-metal: newTextureWithBytesNoCopy: %lux%lu fmt %lu needs %lu bytes, has %lu",(unsigned long)d.width,(unsigned long)d.height,(unsigned long)d.pixelFormat,(unsigned long)(row*rows),(unsigned long)length);return nil;}
@@ -3290,8 +3290,8 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
   id<MTLTexture> texture=[(id<MTLDevice>)self newTextureWithDescriptor:own];
   if(!texture)return nil;
   [texture replaceRegion:MTLRegionMake2D(0,0,d.width,d.height) mipmapLevel:0 withBytes:bytes bytesPerRow:row];
-  SweetMemoryOwner *owner=[SweetMemoryOwner new];owner.deallocator=deallocator;owner.bytes=bytes;owner.length=length;
-  objc_setAssociatedObject(texture,&sweetMemoryOwnerKey,owner,OBJC_ASSOCIATION_RETAIN);
+  BergamotaMemoryOwner *owner=[BergamotaMemoryOwner new];owner.deallocator=deallocator;owner.bytes=bytes;owner.length=length;
+  objc_setAssociatedObject(texture,&bergamotaMemoryOwnerKey,owner,OBJC_ASSOCIATION_RETAIN);
   return texture;
  }
  uint64_t row=chlLinearRow(d.pixelFormat,d.width);
@@ -3308,11 +3308,11 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
   return nil;
  }
  uint32_t bw=0,bh=0,bb=0;
- if(sweetBlock(d.pixelFormat,&bw,&bh,&bb))
-  return [[SweetTextureLayout alloc] initWithBlocks:bw by:bh bytes:bb width:d.width height:d.height];
+ if(bergamotaBlock(d.pixelFormat,&bw,&bh,&bb))
+  return [[BergamotaTextureLayout alloc] initWithBlocks:bw by:bh bytes:bb width:d.width height:d.height];
  const uint64_t row=chlLinearRow(d.pixelFormat,d.width);
  if(!row){NBLOG(@"native-metal: newTextureLayoutWithDescriptor: no linear pitch for fmt %lu: %@",(unsigned long)d.pixelFormat,lastError());return nil;}
- return [[SweetTextureLayout alloc] initWithRow:row height:d.height texel:sweetTexelBytes(d.pixelFormat)];
+ return [[BergamotaTextureLayout alloc] initWithRow:row height:d.height texel:bergamotaTexelBytes(d.pixelFormat)];
 }
 - (id<MTLCommandQueue>)newCommandQueueWithMaxCommandBufferCount:(NSUInteger)count {(void)count;return [(id<MTLDevice>)self newCommandQueue];}
 - (id<MTLBuffer>)newBufferWithLength:(NSUInteger)length options:(MTLResourceOptions)options {
@@ -3389,12 +3389,12 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
  const uintptr_t at=planes?(uintptr_t)IOSurfaceGetBaseAddressOfPlane(surface,plane):(uintptr_t)base;
  size_t row=planes?IOSurfaceGetBytesPerRowOfPlane(surface,plane):IOSurfaceGetBytesPerRow(surface);
  if(!row)row=IOSurfaceGetBytesPerRow(surface);
- // 0216: QuartzCore's '_RB4' surfaces (RGB8_444_2P, 542) are read here as one BGRA8 plane (sweetNarrow) at the
+ // 0216: QuartzCore's '_RB4' surfaces (RGB8_444_2P, 542) are read here as one BGRA8 plane (bergamotaNarrow) at the
  // surface's row. Until kernel 0215 their plane 0 reported row 0, so that row was used; now plane 0 reports its own
  // 1-byte row (465 wide: 512) and every import was refused ("RowPitch bytes_per_row 512, row_bytes 1860", backboardd).
  // Keep the surface's row for them, as before 0215.
  if(d && d.pixelFormat==542 && IOSurfaceGetBytesPerRow(surface)>row)row=IOSurfaceGetBytesPerRow(surface);
- if(!row && sweetNarrow(d.pixelFormat)!=(uint64_t)d.pixelFormat)row=IOSurfaceGetWidth(surface)*4;  // 10-bit asked over BGRA
+ if(!row && bergamotaNarrow(d.pixelFormat)!=(uint64_t)d.pixelFormat)row=IOSurfaceGetWidth(surface)*4;  // 10-bit asked over BGRA
  if(at<(uintptr_t)base || at-(uintptr_t)base>=allocation){NBLOG(@"native-metal: surface texture refused: plane %lu outside the surface",(unsigned long)plane);return nil;}
  // 0217: two-plane YCbCr 4:2:0 ('420f'/'420v') sampled as one texture (MTLPixelFormatYCBCR8_420_2P(_sRGB), 500/501).
  // backboardd composites a photo wallpaper (PhotosPosterProvider's '420f' image) this way and the runtime has no such
@@ -3403,7 +3403,7 @@ static id<MTLTexture> sweetYCbCrTexture(id device,MTLTextureDescriptor *d,IOSurf
  // an RGBA8 texture holding what the hardware format samples as: RGB (0224: converted here, BT.601, the surface's
  // range; 0217 stored raw Y/Cb/Cr, which showed photos in false colours). Kept per surface and rebuilt only when its seed changes.
  if((d.pixelFormat==500 || d.pixelFormat==501) && planes==2 && plane==0)
-  if(id<MTLTexture> t=sweetYCbCrTexture(self,d,surface,base,allocation))return t;
+  if(id<MTLTexture> t=bergamotaYCbCrTexture(self,d,surface,base,allocation))return t;
  NBBuffer *buffer=surfaceBuffer(surface,base,bytes);if(!buffer)return nil;
  bool hasYCbCrPlanes=planes>=2;
  uint64_t chromaOffset=0,chromaRow=0;
@@ -3752,7 +3752,7 @@ static void installAnswers(Class cls) {
 // libraryData]: unrecognized selector"); stitched visible functions are not what metal2vulkan runs either. With both 0
 // Core Image writes each filter chain as Metal source and compiles it (newLibraryWithSource, which works here).
 // Set when this bundle loads (before Core Image reads them); a value already in the environment is kept.
-__attribute__((constructor)) static void sweetCoreImageWithoutStitching(void) {
+__attribute__((constructor)) static void bergamotaCoreImageWithoutStitching(void) {
  setenv("CI_ENABLE_METAL_DAG","0",0);
  setenv("CI_ENABLE_FUNCTION_STITCHING","0",0);
 }
@@ -3897,7 +3897,7 @@ extern "C" id native_bridge_metal_open(const char *loader,const char *cache,uint
  // The original registration (_MTLAddDevice) asserts that a plugin's device conforms to Metal's private device protocol as well; the target's own
  // drivers get it from their IOGPU base class. Conformance only answers conformsToProtocol:, the methods are still looked up one by one.
  if(Protocol *spi=objc_getProtocol("MTLDeviceSPI"))class_addProtocol(cls,spi);
- // SweetMetal2: Metal checks textures against its private implementation protocol too, and NSLogs "texture is not a
+ // BergamotaMetal2: Metal checks textures against its private implementation protocol too, and NSLogs "texture is not a
  // MTLTextureImplementation." on every miss (~600 lines/s from backboardd while scrolling).
  {Protocol *tp=objc_getProtocol("MTLTextureImplementation");if(tp)class_addProtocol([NBTexture class],tp);
   NBLOG(@"native-metal: MTLTextureImplementation %s",tp?([NBTexture conformsToProtocol:tp]?"adopted":"not adopted"):"missing");}

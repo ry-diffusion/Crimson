@@ -335,14 +335,14 @@ fn dma_buf_length(fd: BorrowedFd<'_>) -> Option<u64> {
 }
 
 /// Chlorophyll (Poco F1, XNU): a "dma-buf" is a descriptor the libdrm stand-in registered with an IOSurface's BO
-/// (`sweet_drm_surface_prime`, gpu/freedreno-sweet), whose size `sweet_drm_prime_size` answers; any other descriptor
+/// (`bergamota_drm_surface_prime`, gpu/freedreno-bergamota), whose size `bergamota_drm_prime_size` answers; any other descriptor
 /// is none.
 #[cfg(not(target_os = "linux"))]
 fn dma_buf_length(fd: BorrowedFd<'_>) -> Option<u64> {
     use std::os::fd::AsRawFd;
     type PrimeSize = unsafe extern "C" fn(i32) -> i64;
     // SAFETY: a symbol lookup; the stand-in exports the function with this signature where it is loaded.
-    let size = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"sweet_drm_prime_size".as_ptr()) };
+    let size = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"bergamota_drm_prime_size".as_ptr()) };
     if size.is_null() {
         return None;
     }

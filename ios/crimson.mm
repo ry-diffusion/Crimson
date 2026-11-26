@@ -115,7 +115,7 @@ static void missing(const char *cls, const char *sel)
 	m2v_log("MISSING %s -%s", cls, sel);
 }
 
-/* Private probes CoreImage and QuartzCore send (guacamole SweetMetal2.mm): unanswered, CoreImage's dispatch_once never
+/* Private probes CoreImage and QuartzCore send (guacamole BergamotaMetal2.mm): unanswered, CoreImage's dispatch_once never
  * finished. */
 @interface NBDeviceMethods : NSObject
 @end

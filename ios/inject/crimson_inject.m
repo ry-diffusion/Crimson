@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 // crimson-inject.dylib (was bgmtl-inject.dylib, Chlorophyll inject/; moved into Crimson 2026-11-26): puts a Crimson Metal device (libcrimson) into the processes on its allow-list (Mercury, Photos) and nowhere else.
 //
-// Linked into the extension's executable as an extra LC_LOAD_DYLIB (like sweetfp.dylib into PosterBoard: Renegade's `bgmtl` feature, OFF by
+// Linked into the extension's executable as an extra LC_LOAD_DYLIB (like bergamotafp.dylib into PosterBoard: Renegade's `bgmtl` feature, OFF by
 // default). The constructor does nothing unless every gate is open:
 //   1. the process is on the allow-list by bundle identifier (compiled in: com.apple.MercuryPoster and, since iOS 26, whose Photos
 //      poster aborts in NeutrinoCore without a Metal device, com.apple.PhotosUIPrivate.PhotosPosterProvider);
 //   2. /private/var/tmp/bgmtl.arm exists (the dylib is inert until a person arms it) and /private/var/tmp/bgmtl.off does not (kill switch);
 //   3. the in-process dead-man has not tripped: two unclean launches in a row (state file) write bgmtl.off and the process runs as stock;
-//   4. the kernel reports the GPU ready and not lost (SWEET_GPU_SEL_INFO, flags & 3);
+//   4. the kernel reports the GPU ready and not lost (BERGAMOTA_GPU_SEL_INFO, flags & 3);
 //   5. the device can actually be made (the sandbox may refuse the GPU user client): otherwise the process stays device-less, never half-registered.
 // Registration is MTLAddDevice(device) in THIS process: MTLCreateSystemDefaultDevice and MTLCopyAllDevices answer ours here, no IOKit service
 // gets MetalPluginName, no other process sees anything.
@@ -50,17 +50,17 @@ static const char *crimson_pick(const char *now, const char *old)
 #define CP(now, old) crimson_pick("/private/var/tmp/" now, "/private/var/tmp/" old)
 #define CRIMSON_LIB crimson_pick("/usr/local/lib/crimson/libcrimson.dylib", "/usr/local/lib/bgmtl/libm2v.dylib")
 
-/* GPU state from the kernel through the libdrm stand-in (Bergamota gpu/freedreno-sweet): -1 unknown, 0 not ready, 1 ready, 2 lost.
+/* GPU state from the kernel through the libdrm stand-in (Bergamota gpu/freedreno-bergamota): -1 unknown, 0 not ready, 1 ready, 2 lost.
  * Chlorophyll's fallback Metal device (BGMTLDevice, bgmtl_create_device) is retired (2026-11-26): a process without its Crimson
  * switch stays stock. */
-#include "sweet_adreno_abi.h"
-extern int sweet_drm_info(int fd, struct sweet_gpu_info *out);
+#include "bergamota_adreno_abi.h"
+extern int bergamota_drm_info(int fd, struct bergamota_gpu_info *out);
 static int
 bgmtl_gpu_state(unsigned *abi_minor)
 {
-   struct sweet_gpu_info in;
+   struct bergamota_gpu_info in;
    memset(&in, 0, sizeof(in));
-   if (sweet_drm_info(-1, &in) != 0)
+   if (bergamota_drm_info(-1, &in) != 0)
       return -1;
    if (abi_minor) *abi_minor = in.abi_minor;
    uint32_t f = in.flags & 3;
@@ -91,7 +91,7 @@ static char g_state[192], g_off[192];   /* set per bundle id below, before any u
 static const char *const kAllow[] = { "com.apple.MercuryPoster", "com.apple.PhotosUIPrivate.PhotosPosterProvider",
                                       "com.apple.iconservicesagent", "com.apple.springboard", "com.apple.PosterBoard",
                                       // widgets and Control Center controls are drawn here for chronod (2026-11-24: without a device the
-                                      // home-screen widget stayed "Waiting..."); its binary needs the load command (tools/sweetnet/addlc.py)
+                                      // home-screen widget stayed "Waiting..."); its binary needs the load command (tools/bergamotanet/addlc.py)
                                       "com.apple.chrono.WidgetRenderer-Default", NULL };
 static volatile int g_failures, g_registered, g_bb;
 static volatile unsigned g_completed;
@@ -388,7 +388,7 @@ bb_init(void)
       setenv("BGMTL_SYNC", "1", 1);
       ilog("backboardd: BGMTL_SYNC=1 (synchronous commits)");
    }
-   if (exists(CP("crimson-bb.triple", "bgmtl-bb.triple"))) {   // three framebuffers: with sweetfb_swapdepth=2 CoreAnimation draws N+1 while N
+   if (exists(CP("crimson-bb.triple", "bgmtl-bb.triple"))) {   // three framebuffers: with bergamotafb_swapdepth=2 CoreAnimation draws N+1 while N
       setenv("CA_FORCE_TRIPLE_BUFFERING", "1", 1);     // is queued and N-1 is on the panel; with two buffers N+1 lands in the scanned one
       ilog("backboardd: CA_FORCE_TRIPLE_BUFFERING=1");
    }

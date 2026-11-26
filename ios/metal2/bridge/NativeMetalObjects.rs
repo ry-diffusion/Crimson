@@ -182,12 +182,12 @@ fn millis_after(text: &str, marker: &str) -> Option<f64> {
     rest[..end].parse().ok()
 }
 
-// SWEET_M2V_MESSAGES=PATH (debugging): every distinct message but the pipeline log appended to PATH, at most 400 per process.
+// BERGAMOTA_M2V_MESSAGES=PATH (debugging): every distinct message but the pipeline log appended to PATH, at most 400 per process.
 fn log_message(message: &DebugMessage) {
     use std::io::Write;
     static LOG: std::sync::OnceLock<Option<std::sync::Mutex<(std::fs::File, std::collections::HashSet<String>)>>> = std::sync::OnceLock::new();
     let log = LOG.get_or_init(|| {
-        let path = std::env::var_os("SWEET_M2V_MESSAGES")?;
+        let path = std::env::var_os("BERGAMOTA_M2V_MESSAGES")?;
         let file = std::fs::OpenOptions::new().create(true).append(true).open(path).ok()?;
         Some(std::sync::Mutex::new((file, std::collections::HashSet::new())))
     });

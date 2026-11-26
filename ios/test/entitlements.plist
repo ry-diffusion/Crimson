@@ -5,6 +5,6 @@
 	<key>platform-application</key><true/>
 	<key>com.apple.private.security.no-sandbox</key><true/>
 	<key>com.apple.security.iokit-user-client-class</key>
-	<array><string>SweetAdrenoUserClient</string></array>
+	<array><string>BergamotaAdrenoUserClient</string></array>
 </dict>
 </plist>

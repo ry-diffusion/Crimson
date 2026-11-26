@@ -26,18 +26,18 @@ if [ $inject = 1 ]; then
   T=90 P 'cat > /usr/local/lib/crimson/.inject.tmp' < "$W/out-metal/crimson-inject.dylib" &&
   P 'chmod 755 /usr/local/lib/crimson/.inject.tmp && mv /usr/local/lib/crimson/.inject.tmp /usr/local/lib/crimson/crimson-inject.dylib' || exit 1
 fi
-# Since 2026-11-24 the boot partition holds boot56-recovery (panic reset, watchdog, sweetcores=0xf1 = CPU0 + A75s), so a
+# Since 2026-11-24 the boot partition holds boot56-recovery (panic reset, watchdog, bergamotacores=0xf1 = CPU0 + A75s), so a
 # plain reboot keeps the big-core scheduling. M2V_BOOT_IMG=... RAM-boots another image instead (fastboot boot, not flashed);
 # M2V_CORES=MASK writes kern.sched_update_recommended_cores (needs an image with enable_skstb).
 IMG="${M2V_BOOT_IMG:-}"
 CORES="${M2V_CORES:-none}"
 if [ $reboot = 1 ]; then
   if [ -n "$IMG" ]; then
-    P 'sync; sweetreboot fastboot' >/dev/null 2>&1
+    P 'sync; bergamotareboot fastboot' >/dev/null 2>&1
     n=0; until fastboot devices 2>/dev/null | grep -q fastboot; do n=$((n+1)); [ $n -ge 120 ] && { echo "no fastboot"; exit 1; }; python3 -c 'import time; time.sleep(2)'; done
     fastboot boot "$IMG" >/dev/null 2>&1 || { echo "fastboot boot failed"; exit 1; }
   else
-    P 'sync; sweetreboot normal' >/dev/null 2>&1
+    P 'sync; bergamotareboot normal' >/dev/null 2>&1
   fi
   n=0; until [ $n -ge 3 ] && T=8 P true 2>/dev/null; do n=$((n+1)); [ $n -ge 150 ] && { echo "phone did not come back"; exit 1; }; done
   for i in $(seq 1 10); do T=13 P true; done   # let SpringBoard, backboardd and the posters settle
@@ -45,16 +45,16 @@ fi
 [ "$CORES" != none ] && P "/var/root/sctest kern.sched_update_recommended_cores $CORES | grep -o 'write.*'"
 # stale kill switches from unclean launches (Mercury's two instances share one state file); never backboardd's
 P 'cd /private/var/tmp; for b in com.apple.MercuryPoster com.apple.springboard; do if [ -f bgmtl.off.$b ] && [ -f bgmtl.m2v.$b ]; then mv bgmtl.off.$b /var/root/bgmtl.off.$b.fpsrun; rm -f bgmtl.state.$b; [ $b = com.apple.MercuryPoster ] && for p in $(ps -ax -o pid,command | grep "[M]ercuryPosterExtension" | cut -c1-6); do kill $p; done; echo "cleared $b"; fi; done; true'
-P '/var/root/sweetwake wake >/dev/null 2>&1; /var/root/sweetwake unlock >/dev/null 2>&1; true'
+P '/var/root/bergamotawake wake >/dev/null 2>&1; /var/root/bergamotawake unlock >/dev/null 2>&1; true'
 for i in 1 2 3; do T=13 P true; done
 start=$(P 'wc -l < /private/var/tmp/crimson.log' | tr -d ' ')
 # what reached the panel: the framebuffer's own counters (the meter below counts commits, shown or not)
-FB() { P '/var/root/sysctlget kern.sweet_fb' | tr ' ' '\n' | grep -E '^(swaps|coalesced|copy_frames|zc_frames|scan_gpu_copies|gpu_hold_timeouts)=' | tr '\n' ' '; }
+FB() { P '/var/root/sysctlget kern.bergamota_fb' | tr ' ' '\n' | grep -E '^(swaps|coalesced|copy_frames|zc_frames|scan_gpu_copies|gpu_hold_timeouts)=' | tr '\n' ' '; }
 fb0=$(FB)
-P '/var/root/sweetwake home >/dev/null 2>&1; true'
+P '/var/root/bergamotawake home >/dev/null 2>&1; true'
 for i in $(seq 1 "$swipes"); do
   # home first: back on page 1, so a missed swipe cannot drift the pair onto the Today view
-  P '/var/root/sweetwake home >/dev/null 2>&1; /var/root/sweetwake swipe 360 450 50 450 300 >/dev/null 2>&1; /var/root/sweetwake swipe 50 450 360 450 300 >/dev/null 2>&1; true'
+  P '/var/root/bergamotawake home >/dev/null 2>&1; /var/root/bergamotawake swipe 360 450 50 450 300 >/dev/null 2>&1; /var/root/bergamotawake swipe 50 450 360 450 300 >/dev/null 2>&1; true'
 done
 fb1=$(FB)
 python3 - "$label" "$fb0" "$fb1" <<'EOF2'
@@ -66,7 +66,7 @@ print(f"{sys.argv[1]}: panel: {shown} frames shown of {d.get('swaps', 0)} swaps 
 EOF2
 P "tail -n +${start:-1} /private/var/tmp/crimson.log | grep 'fps:'" > "/tmp/fpsrun-$label.txt" 2>/dev/null
 P "tail -n +${start:-1} /private/var/tmp/crimson.log | grep -E 'MISSING|refused|memory is gone|Lost' | cut -c1-160 | sort | uniq -c | sort -rn | head -8"
-P '/var/root/sweetgpu | grep -oE "mhz=[0-9]+|busy_pct=[0-9]+|recoveries=[0-9]+|hangs=[0-9]+" | tr "\n" " "; echo'
+P '/var/root/bergamotagpu | grep -oE "mhz=[0-9]+|busy_pct=[0-9]+|recoveries=[0-9]+|hangs=[0-9]+" | tr "\n" " "; echo'
 python3 - "/tmp/fpsrun-$label.txt" "$label" <<'EOF'
 import re, sys, collections
 rows = collections.defaultdict(list)

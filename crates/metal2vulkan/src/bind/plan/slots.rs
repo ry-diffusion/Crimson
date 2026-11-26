@@ -260,10 +260,10 @@ pub(crate) fn srgb_variant(
         .iter()
         .filter(|(_, ty)| **ty == SampledType::Float)
         .map(|(slot, _)| *slot);
-    // Chlorophyll: SWEET_M2V_SRGB_DEVICE keeps the device's sRGB decode and filter (the slot's decoding view, as for a heap
+    // Chlorophyll: BERGAMOTA_M2V_SRGB_DEVICE keeps the device's sRGB decode and filter (the slot's decoding view, as for a heap
     // element: `PrecisionNote::SrgbTexelDecode`) instead of the raw-code emulation, whose exact integer division per tap made
     // MercuryPoster's background fragment shader cost ~300 ms a frame on the A630. Integer-class (cross) slots keep the raw path.
-    let device_decode = std::env::var_os("SWEET_M2V_SRGB_DEVICE").is_some();
+    let device_decode = std::env::var_os("BERGAMOTA_M2V_SRGB_DEVICE").is_some();
     dependencies
         .iter()
         .filter_map(|d| match d.fact {
