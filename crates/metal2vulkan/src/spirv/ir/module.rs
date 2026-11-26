@@ -1383,9 +1383,6 @@ pub struct TypedModule {
     /// The values decorated `NonUniform`: every result that carries a non-uniform descriptor
     /// element ([`Inst::carries_non_uniform`]), recorded as the builder appends it.
     pub(in crate::spirv) non_uniform: std::collections::BTreeSet<Value>,
-    /// The values decorated `RelaxedPrecision` (`FunctionBuilder::relax`): `half` results left
-    /// unrounded (`CHL_M2V_HALF_UNROUNDED`), which a driver may compute in 16 bits.
-    pub(in crate::spirv) relaxed: std::collections::BTreeSet<Value>,
     /// The `Function` variables the emitter holds workgroup uniform by construction: the `cont`
     /// flag of a predicated loop that iterates together, which the lowering's uniformity analysis
     /// proved. An in-memory record for checks (`spirv::testing::barriers`), kept only where they

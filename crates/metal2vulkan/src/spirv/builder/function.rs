@@ -43,12 +43,6 @@ impl<'m> FunctionBuilder<'m> {
         self.m
     }
 
-    /// Decorate `v` `RelaxedPrecision` if it is an instruction's result: a driver may compute it
-    /// in 16 bits (Chlorophyll, `lower::arith::narrow::round` under `CHL_M2V_HALF_UNROUNDED`).
-    pub fn relax(&mut self, v: Value) {
-        self.m.relaxed.insert(v);
-    }
-
     /// The module, read-only (for the constructor files).
     pub(super) fn mb(&self) -> &ModuleBuilder {
         self.m
