@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// crimson-inject.dylib (was bgmtl-inject.dylib, Chlorophyll inject/; moved into Crimson 2026-11-26): puts BGMTLDevice into the poster extensions on its allow-list (Mercury, Photos) and nowhere else.
+// crimson-inject.dylib (was bgmtl-inject.dylib, Chlorophyll inject/; moved into Crimson 2026-11-26): puts a Crimson Metal device (libcrimson) into the processes on its allow-list (Mercury, Photos) and nowhere else.
 //
 // Linked into the extension's executable as an extra LC_LOAD_DYLIB (like sweetfp.dylib into PosterBoard: Renegade's `bgmtl` feature, OFF by
 // default). The constructor does nothing unless every gate is open:
@@ -50,8 +50,22 @@ static const char *crimson_pick(const char *now, const char *old)
 #define CP(now, old) crimson_pick("/private/var/tmp/" now, "/private/var/tmp/" old)
 #define CRIMSON_LIB crimson_pick("/usr/local/lib/crimson/libcrimson.dylib", "/usr/local/lib/bgmtl/libm2v.dylib")
 
-extern id bgmtl_create_device(void);
-extern int bgmtl_gpu_state(unsigned *abi_minor);
+/* GPU state from the kernel through the libdrm stand-in (Bergamota gpu/freedreno-sweet): -1 unknown, 0 not ready, 1 ready, 2 lost.
+ * Chlorophyll's fallback Metal device (BGMTLDevice, bgmtl_create_device) is retired (2026-11-26): a process without its Crimson
+ * switch stays stock. */
+#include "sweet_adreno_abi.h"
+extern int sweet_drm_info(int fd, struct sweet_gpu_info *out);
+static int
+bgmtl_gpu_state(unsigned *abi_minor)
+{
+   struct sweet_gpu_info in;
+   memset(&in, 0, sizeof(in));
+   if (sweet_drm_info(-1, &in) != 0)
+      return -1;
+   if (abi_minor) *abi_minor = in.abi_minor;
+   uint32_t f = in.flags & 3;
+   return (f & 2) ? 2 : (f & 1) ? 1 : 0;
+}
 
 #define F_OFF CP("crimson.off", "bgmtl.off")
 #define F_ARM CP("crimson.arm", "bgmtl.arm")
@@ -419,9 +433,10 @@ bb_init(void)
          if (w) { fprintf(w, "unclean=0 alive=1 boot=%s\n", boot_id()); fclose(w); }
          ilog("backboardd: up 90 s on Crimson: dead-man counter reset");
       });
-   } else
-      dev = bgmtl_create_device();
-   if (!dev) { ilog("backboardd: no device could be made: stock"); return; }
+   } else {
+      ilog("backboardd: no crimson-bb.on: stock");
+      return;
+   }
    void (*add)(id) = (void (*)(id))dlsym(RTLD_DEFAULT, "MTLAddDevice");
    NSArray *(*all)(void) = (NSArray * (*)(void))dlsym(RTLD_DEFAULT, "MTLCopyAllDevices");
    if (!add || !all) { ilog("backboardd: Metal registration entry points missing: stock"); return; }
@@ -430,7 +445,7 @@ bb_init(void)
    bb_watch_exit();
    add(dev);
    g_registered = 1;
-   ilog("backboardd: %s device registered (kernel ABI minor %u)%s", m2v ? "Crimson" : "Chlorophyll (fallback)", minor, crashtest ? ", CRASHTEST armed" : "");
+   ilog("backboardd: %s device registered (kernel ABI minor %u)%s", "Crimson", minor, crashtest ? ", CRASHTEST armed" : "");
    pthread_t th;
    pthread_create(&th, NULL, watchdog_bb, (void *)(intptr_t)crashtest);
    pthread_detach(th);
@@ -544,8 +559,11 @@ bgmtl_inject_init(void)
          dev = create ? create() : nil;
          ilog("%s: Crimson device %s%s", [bid UTF8String], dev ? "made" : "refused: ", dev ? "" : (h ? "see crimson.log" : dlerror()));
          if (!dev) { write_state(unclean, 1); return; }
-      } else
-         dev = bgmtl_create_device();
+      } else {
+         ilog("%s: no crimson.app switch: stock", [bid UTF8String]);
+         write_state(unclean, 1);
+         return;
+      }
       if (!dev) { ilog("no device could be made (sandbox? GPU?): staying stock"); write_state(unclean, 1); return; }
       void (*add)(id) = (void (*)(id))dlsym(RTLD_DEFAULT, "MTLAddDevice");
       if (!add) { ilog("MTLAddDevice not found: staying stock"); write_state(unclean, 1); return; }
@@ -563,7 +581,7 @@ bgmtl_inject_init(void)
       setenv("CI_USE_MTL_DAG_FOR_CIKL_SRC", "0", 0);
       add(dev);
       g_registered = 1;
-      ilog("%s: BGMTLDevice registered in this process (kernel ABI minor %u)", [bid UTF8String], minor);
+      ilog("%s: Crimson device registered in this process (kernel ABI minor %u)", [bid UTF8String], minor);
       atexit(clean_exit);
       pthread_t th;
       pthread_create(&th, NULL, watchdog, NULL);

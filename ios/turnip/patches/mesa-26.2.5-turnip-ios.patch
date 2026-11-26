@@ -1,0 +1,610 @@
+diff --git a/meson.build b/meson.build
+index 5f19ef9..bc14e62 100644
+--- a/meson.build
++++ b/meson.build
+@@ -160,6 +160,11 @@ pre_args += '-DHAVE_OPENGL_ES_2=@0@'.format(with_gles2.to_int())
+ with_any_opengl = with_opengl or with_gles1 or with_gles2
+ 
+ system_has_kms_drm = ['openbsd', 'netbsd', 'freebsd', 'gnu/kfreebsd', 'dragonfly', 'linux', 'sunos', 'android', 'managarm'].contains(host_machine.system())
++# Chlorophyll: iOS has no DRM, but Turnip's msm backend runs over Bergamota's libdrm stand-in (gpu/freedreno-sweet), which turns the
++# msm requests into SweetAdrenoUserClient calls
++if host_machine.system() == 'darwin' and get_option('vulkan-drivers').contains('freedreno')
++  system_has_kms_drm = true
++endif
+ 
+ gallium_drivers = get_option('gallium-drivers')
+ if gallium_drivers.contains('auto')
+diff --git a/src/freedreno/ir3/ir3_compiler_nir.c b/src/freedreno/ir3/ir3_compiler_nir.c
+index 8e3b41a..e8e30e8 100644
+--- a/src/freedreno/ir3/ir3_compiler_nir.c
++++ b/src/freedreno/ir3/ir3_compiler_nir.c
+@@ -410,6 +410,13 @@ create_cov(struct ir3_context *ctx, unsigned nrpt,
+          set_cat1_round(cov.rpts, nrpt, ROUND_EVEN);
+       else if (rounding_mode == nir_rounding_mode_rtz)
+          set_cat1_round(cov.rpts, nrpt, ROUND_ZERO);
++      else
++         /* Nothing declared a mode, and the field defaults to ROUND_ZERO,
++          * which is truncation. IEEE-754, GLSL and OpenCL all require
++          * round-to-nearest-even here, so ask for it rather than letting the
++          * hardware's own default stand.
++          */
++         set_cat1_round(cov.rpts, nrpt, ROUND_EVEN);
+    }
+ 
+    return cov;
+diff --git a/src/freedreno/ir3/ir3_context.c b/src/freedreno/ir3/ir3_context.c
+index 1d6acf2..3a830b8 100644
+--- a/src/freedreno/ir3/ir3_context.c
++++ b/src/freedreno/ir3/ir3_context.c
+@@ -348,7 +348,8 @@ ir3_context_error(struct ir3_context *ctx, const char *format, ...)
+    nir_log_shader_annotated(ctx->s, errors);
+    ralloc_free(errors);
+    ctx->error = true;
+-   UNREACHABLE("");
++   /* Chlorophyll: return, and let the compile fail on ctx->error. UNREACHABLE("") is undefined behaviour in a release
++    * build, and on the A630 it spun the compile thread forever (iOS 26's RenderBox shaders in iconservicesagent). */
+ }
+ 
+ static struct ir3_instruction *
+diff --git a/src/freedreno/ir3/ir3_disk_cache.c b/src/freedreno/ir3/ir3_disk_cache.c
+index 3b732d3..5165da2 100644
+--- a/src/freedreno/ir3/ir3_disk_cache.c
++++ b/src/freedreno/ir3/ir3_disk_cache.c
+@@ -5,6 +5,32 @@
+ 
+ #include "nir_serialize.h"
+ 
++#ifdef __APPLE__
++#include <dlfcn.h>
++#include <mach-o/loader.h>
++
++/* the LC_UUID of the image holding `addr`, as 32 hex digits */
++static bool
++macho_uuid_hex(const void *addr, char out[41])
++{
++   Dl_info di;
++   if (!dladdr(addr, &di) || !di.dli_fbase)
++      return false;
++   const struct mach_header_64 *h = di.dli_fbase;
++   const struct load_command *lc = (const struct load_command *)(h + 1);
++   for (uint32_t i = 0; i < h->ncmds; i++) {
++      if (lc->cmd == LC_UUID) {
++         const struct uuid_command *u = (const struct uuid_command *)lc;
++         for (unsigned k = 0; k < 16; k++)
++            snprintf(out + 2 * k, 3, "%02x", u->uuid[k]);
++         return true;
++      }
++      lc = (const struct load_command *)((const char *)lc + lc->cmdsize);
++   }
++   return false;
++}
++#endif
++
+ #include "ir3_compiler.h"
+ #include "ir3_nir.h"
+ 
+@@ -33,6 +59,17 @@ ir3_disk_cache_init(struct ir3_compiler *compiler)
+    if (ir3_shader_debug & IR3_DBG_NOCACHE)
+       return;
+ 
++#ifdef __APPLE__
++   /* Bergamota/Chlorophyll: Mach-O has no ELF build-id; the image's LC_UUID is the same thing (new at every link), so a
++    * rebuilt library never reads another build's binaries. The cache folder comes from MESA_SHADER_CACHE_DIR (the
++    * Chlorophyll inject sets one per user). */
++   const char *renderer = fd_dev_name(compiler->dev_id);
++   char timestamp[41] = { 0 };
++   if (!macho_uuid_hex((const void *)ir3_disk_cache_init, timestamp))
++      return;
++   uint64_t driver_flags = ir3_shader_debug_hash_key();
++   compiler->disk_cache = disk_cache_create(renderer, timestamp, driver_flags);
++#else
+    const char *renderer = fd_dev_name(compiler->dev_id);
+    const struct build_id_note *note =
+       build_id_find_nhdr_for_addr(ir3_disk_cache_init);
+@@ -55,6 +92,7 @@ ir3_disk_cache_init(struct ir3_compiler *compiler)
+ 
+    uint64_t driver_flags = ir3_shader_debug_hash_key();
+    compiler->disk_cache = disk_cache_create(renderer, timestamp, driver_flags);
++#endif
+ }
+ 
+ void
+diff --git a/src/freedreno/ir3/ir3_legalize.c b/src/freedreno/ir3/ir3_legalize.c
+index 02c3812..eb163a9 100644
+--- a/src/freedreno/ir3/ir3_legalize.c
++++ b/src/freedreno/ir3/ir3_legalize.c
+@@ -1107,12 +1107,8 @@ retarget_jump(struct ir3_instruction *instr, struct ir3_block *new_target)
+ 
+    instr->cat0.target = new_target;
+ 
+-   if (old_target->predecessors_count == 0) {
+-      remove_unused_block(old_target);
+-      return true;
+-   }
+-
+-   return false;
++   /* the caller removes it once its walk over the blocks is done */
++   return old_target->predecessors_count == 0;
+ }
+ 
+ static bool
+@@ -1139,6 +1135,13 @@ opt_jump(struct ir3 *ir)
+    foreach_block (block, &ir->block_list)
+       block->index = index++;
+ 
++   /* Blocks a retargeting leaves without predecessors are removed after the walk. Removing one in the middle of it meant
++    * restarting the whole walk after every such retargeting, quadratic in the number of blocks: 77 s in ir3_legalize for
++    * CoreAnimation's largest fragment shader (Chlorophyll on Turnip, 2026-10-26).
++    */
++   struct ir3_block **unused = malloc(MAX2(index, 1) * sizeof(*unused));
++   unsigned n_unused = 0;
++
+    foreach_block (block, &ir->block_list) {
+       /* This pass destroys the physical CFG so don't keep it around to avoid
+        * validation errors.
+@@ -1154,11 +1157,9 @@ opt_jump(struct ir3 *ir)
+          if (tblock != instr->cat0.target) {
+             progress = true;
+ 
+-            /* Exit early if we deleted a block to avoid iterator
+-             * weirdness/assert fails
+-             */
+-            if (retarget_jump(instr, tblock))
+-               return true;
++            struct ir3_block *old_target = instr->cat0.target;
++            if (retarget_jump(instr, tblock) && n_unused < index)
++               unused[n_unused++] = old_target;
+          }
+       }
+ 
+@@ -1197,6 +1198,12 @@ opt_jump(struct ir3 *ir)
+       }
+    }
+ 
++   for (unsigned i = 0; i < n_unused; i++) {
++      if (unused[i]->predecessors_count == 0)   /* nothing jumped back to it later in the walk */
++         remove_unused_block(unused[i]);
++   }
++   free(unused);
++
+    return progress;
+ }
+ 
+diff --git a/src/freedreno/ir3/ir3_nir.c b/src/freedreno/ir3/ir3_nir.c
+index 61cc3ee..621e9a6 100644
+--- a/src/freedreno/ir3/ir3_nir.c
++++ b/src/freedreno/ir3/ir3_nir.c
+@@ -1185,6 +1185,8 @@ ir3_mem_access_size_align(nir_intrinsic_op intrin, uint8_t bytes,
+                  uint32_t align_offset, bool offset_is_const,
+                  enum gl_access_qualifier access, const void *cb_data)
+ {
++   const struct ir3_compiler *compiler = (const struct ir3_compiler *)cb_data;
++
+    align = nir_combined_align(align, align_offset);
+    assert(util_is_power_of_two_nonzero(align));
+ 
+@@ -1202,6 +1204,22 @@ ir3_mem_access_size_align(nir_intrinsic_op intrin, uint8_t bytes,
+    if (intrin == nir_intrinsic_load_ubo)
+       bit_size = 32;
+ 
++   /* Chlorophyll: ldib/stib scale the offset by the texel size of the IBO descriptor, while lower_offset_for_ssbo()
++    * scales it by the size of the access. A device with no narrower descriptor to point them at (Turnip on the A630
++    * writes 16- and 8-bit SSBO descriptors only with storage_16bit / storage_8bit) must therefore stay on dwords:
++    * otherwise a 16-bit access lands at twice the byte offset it was given and an 8-bit one at four times, and an 8-bit
++    * store becomes a typed R8 store against a 32-bit descriptor. Metal shaders have ushort/uchar fields in device
++    * buffers (MetalFaceMask_* in PortraitFilters.metallib). nir_lower_mem_access_bit_sizes turns what is left into a
++    * dword load plus a shift, or a store into a pair of 32-bit atomics (threads sharing a dword keep their bytes).
++    */
++   if ((intrin == nir_intrinsic_load_ssbo || intrin == nir_intrinsic_store_ssbo) &&
++       ((bit_size == 16 && (!compiler || !compiler->options.storage_16bit)) ||
++        (bit_size == 8 && (!compiler || !compiler->options.storage_8bit)))) {
++      bit_size = 32;
++      if (align < 4)
++         bytes = MIN2(bytes, 4);
++   }
++
+    return (nir_mem_access_size_align){
+       .num_components = MAX2(1, MIN2(bytes / (bit_size / 8), 4)),
+       .bit_size = bit_size,
+@@ -1562,6 +1580,9 @@ ir3_nir_lower_variant(struct ir3_shader_variant *so,
+                nir_var_mem_global | nir_var_mem_shared |
+                nir_var_function_temp | nir_var_mem_ssbo | nir_var_mem_global,
+       .callback = ir3_mem_access_size_align,
++      /* Chlorophyll: the callback asks which SSBO descriptors the device has; a widened narrow store becomes atomics */
++      .may_lower_unaligned_stores_to_atomics = true,
++      .cb_data = (void *)so->compiler,
+    };
+ 
+    progress |= OPT(s, nir_lower_mem_access_bit_sizes, &mem_bit_size_options);
+diff --git a/src/freedreno/vulkan/meson.build b/src/freedreno/vulkan/meson.build
+index b019710..334edd9 100644
+--- a/src/freedreno/vulkan/meson.build
++++ b/src/freedreno/vulkan/meson.build
+@@ -228,9 +228,12 @@ libvulkan_freedreno = shared_library(
+   gnu_symbol_visibility : 'hidden',
+   link_args : [vulkan_icd_link_args, ld_args_bsymbolic, ld_args_gc_sections, ld_args_build_id],
+   link_depends : vulkan_icd_link_depends,
++  # Chlorophyll (iOS): the optional entrypoints are weak references, which Mach-O resolves at run time only (as lavapipe does)
++  override_options : ['b_lundef=@0@'.format(host_machine.system() == 'darwin' ? 'false' : get_option('b_lundef').to_string())],
+   install : true,
+ )
+ 
++
+ if with_symbols_check
+   test(
+     'tu symbols check',
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
+index b04617d..990e93e 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.cc
++++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
+@@ -9,6 +9,9 @@
+ 
+ #include "tu_cmd_buffer.h"
+ 
++/* chl: what cmd->state.program points at before a pipeline is bound (was a zeroed copy) */
++const struct tu_program_state tu_empty_program_state = {};
++
+ #include "vk_common_entrypoints.h"
+ #include "vk_log.h"
+ #include "vk_render_pass.h"
+@@ -4353,6 +4356,7 @@ tu_cmd_buffer_begin(struct tu_cmd_buffer *cmd_buffer,
+    vk_command_buffer_begin(&cmd_buffer->vk, pBeginInfo);
+ 
+    memset(&cmd_buffer->state, 0, sizeof(cmd_buffer->state));
++   cmd_buffer->state.program = &tu_empty_program_state;
+    vk_dynamic_graphics_state_init(&cmd_buffer->vk.dynamic_graphics_state);
+    cmd_buffer->vk.dynamic_graphics_state.vi = &cmd_buffer->state.vi;
+    cmd_buffer->vk.dynamic_graphics_state.ms.sample_locations = &cmd_buffer->state.sl;
+@@ -5520,7 +5524,7 @@ tu_CmdBindPipeline(VkCommandBuffer commandBuffer,
+ 
+    vk_cmd_set_dynamic_graphics_state(&cmd->vk,
+                                      &gfx_pipeline->dynamic_state);
+-   cmd->state.program = pipeline->program;
++   cmd->state.program = &pipeline->program;
+ 
+    cmd->state.load_state = pipeline->load_state;
+    cmd->state.prim_order_gmem = pipeline->prim_order.state_gmem;
+@@ -7850,7 +7854,7 @@ tu_emit_consts(struct tu_cmd_buffer *cmd, bool compute)
+    uint32_t dwords = 0;
+    const struct tu_push_constant_range *shared_consts =
+       compute ? &cmd->state.shaders[MESA_SHADER_COMPUTE]->const_state.push_consts :
+-      &cmd->state.program.shared_consts;
++      &cmd->state.program->shared_consts;
+ 
+    dwords = tu6_const_size(cmd, shared_consts, compute);
+ 
+@@ -7887,7 +7891,7 @@ tu_emit_consts(struct tu_cmd_buffer *cmd, bool compute)
+          tu_get_descriptors_state(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS);
+       for (uint32_t type = MESA_SHADER_VERTEX; type <= MESA_SHADER_FRAGMENT; type++) {
+          const struct tu_program_descriptor_linkage *link =
+-            &cmd->state.program.link[type];
++            &cmd->state.program->link[type];
+          tu6_emit_per_stage_push_consts(&cs, &link->tu_const_state,
+                                         &link->const_state,
+                                         (mesa_shader_stage) type,
+@@ -8137,7 +8141,7 @@ static uint32_t
+ fs_params_offset(struct tu_cmd_buffer *cmd)
+ {
+    const struct tu_program_descriptor_linkage *link =
+-      &cmd->state.program.link[MESA_SHADER_FRAGMENT];
++      &cmd->state.program->link[MESA_SHADER_FRAGMENT];
+    const struct ir3_const_state *const_state = &link->const_state;
+ 
+    if (const_state->num_driver_params <= IR3_DP_FS_DYNAMIC)
+@@ -8156,7 +8160,7 @@ static uint32_t
+ fs_params_size(struct tu_cmd_buffer *cmd)
+ {
+    const struct tu_program_descriptor_linkage *link =
+-      &cmd->state.program.link[MESA_SHADER_FRAGMENT];
++      &cmd->state.program->link[MESA_SHADER_FRAGMENT];
+    const struct ir3_const_state *const_state = &link->const_state;
+ 
+    return DIV_ROUND_UP(const_state->num_driver_params - IR3_DP_FS_DYNAMIC, 4);
+@@ -8411,16 +8415,16 @@ tu6_draw_common(struct tu_cmd_buffer *cmd,
+                 /* note: draw_count is 0 for indirect */
+                 uint32_t draw_count)
+ {
+-   const struct tu_program_state *program = &cmd->state.program;
++   const struct tu_program_state *program = cmd->state.program;
+    struct tu_render_pass_state *rp = &cmd->state.rp;
+ 
+    trace_start_draw(
+       &cmd->rp_trace, &cmd->draw_cs, cmd, draw_count,
+-      cmd->state.program.stage_blake3[MESA_SHADER_VERTEX],
+-      cmd->state.program.stage_blake3[MESA_SHADER_TESS_CTRL],
+-      cmd->state.program.stage_blake3[MESA_SHADER_TESS_EVAL],
+-      cmd->state.program.stage_blake3[MESA_SHADER_GEOMETRY],
+-      cmd->state.program.stage_blake3[MESA_SHADER_FRAGMENT]);
++      (char *)cmd->state.program->stage_blake3[MESA_SHADER_VERTEX],
++      (char *)cmd->state.program->stage_blake3[MESA_SHADER_TESS_CTRL],
++      (char *)cmd->state.program->stage_blake3[MESA_SHADER_TESS_EVAL],
++      (char *)cmd->state.program->stage_blake3[MESA_SHADER_GEOMETRY],
++      (char *)cmd->state.program->stage_blake3[MESA_SHADER_FRAGMENT]);
+ 
+    /* Emit state first, because it's needed for bandwidth calculations */
+    uint32_t dynamic_draw_state_dirty = 0;
+@@ -8493,7 +8497,7 @@ tu6_draw_common(struct tu_cmd_buffer *cmd,
+    }
+ 
+    if (cmd->device->physical_device->info->props.has_rt_workaround &&
+-       cmd->state.program.uses_ray_intersection) {
++       cmd->state.program->uses_ray_intersection) {
+       tu_set_render_mode<CHIP>(cs, { .shader_uses_rt = true });
+    }
+ 
+@@ -8750,7 +8754,7 @@ static uint32_t
+ vs_params_offset(struct tu_cmd_buffer *cmd)
+ {
+    const struct tu_program_descriptor_linkage *link =
+-      &cmd->state.program.link[MESA_SHADER_VERTEX];
++      &cmd->state.program->link[MESA_SHADER_VERTEX];
+    const struct ir3_const_state *const_state = &link->const_state;
+ 
+    uint32_t param_offset =
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.h b/src/freedreno/vulkan/tu_cmd_buffer.h
+index 17bebeb..ca9f5d3 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.h
++++ b/src/freedreno/vulkan/tu_cmd_buffer.h
+@@ -459,7 +459,8 @@ struct tu_cmd_state
+ 
+    struct tu_shader *shaders[MESA_SHADER_STAGES];
+ 
+-   struct tu_program_state program;
++   /* chl: the bound pipeline's program state (was a copy, ~KBs memmoved at every bind) */
++   const struct tu_program_state *program;
+ 
+    struct tu_render_pass_state rp;
+ 
+diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
+index e8ef940..147ae9c 100644
+--- a/src/freedreno/vulkan/tu_device.cc
++++ b/src/freedreno/vulkan/tu_device.cc
+@@ -3174,6 +3174,8 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
+                                  "pthread condattr init");
+       goto fail_timeline_cond;
+    }
++#ifndef __APPLE__
++   /* Chlorophyll: Darwin has no pthread_condattr_setclock; only the kgsl backend waits on this condition */
+    if (pthread_condattr_setclock(&condattr, CLOCK_MONOTONIC) != 0) {
+       pthread_condattr_destroy(&condattr);
+       result = vk_startup_errorf(physical_device->instance,
+@@ -3181,6 +3183,7 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
+                                  "pthread condattr clock setup");
+       goto fail_timeline_cond;
+    }
++#endif
+    if (pthread_cond_init(&device->timeline_cond, &condattr) != 0) {
+       pthread_condattr_destroy(&condattr);
+       result = vk_startup_errorf(physical_device->instance,
+diff --git a/src/freedreno/vulkan/tu_knl.cc b/src/freedreno/vulkan/tu_knl.cc
+index ab27798..2268451 100644
+--- a/src/freedreno/vulkan/tu_knl.cc
++++ b/src/freedreno/vulkan/tu_knl.cc
+@@ -152,13 +152,20 @@ tu_bo_unmap(struct tu_device *dev, struct tu_bo *bo, bool reserve)
+    TU_RMV(bo_unmap, dev, bo);
+ 
+    if (reserve) {
++#ifdef __APPLE__
++      sweet_drm_munmap(bo->map, bo->size);   /* Chlorophyll: release the IOKit mapping first */
++#endif
+       void *map = mmap(bo->map, bo->size, PROT_NONE,
+                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+       if (map == MAP_FAILED)
+          return vk_errorf(dev, VK_ERROR_MEMORY_MAP_FAILED,
+                           "Failed to replace mapping with reserved memory");
+    } else {
++#ifdef __APPLE__
++      sweet_drm_munmap(bo->map, bo->size);   /* Chlorophyll: IOKit mapping (libdrm stand-in) */
++#else
+       munmap(bo->map, bo->size);
++#endif
+    }
+ 
+    bo->map = NULL;
+diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
+index 4c2bf6a..b53b28c 100644
+--- a/src/freedreno/vulkan/tu_knl.h
++++ b/src/freedreno/vulkan/tu_knl.h
+@@ -16,6 +16,19 @@
+ #include "util/u_atomic.h"
+ #include "vulkan/vulkan_core.h"
+ 
++#ifdef __APPLE__
++/* Chlorophyll: BO maps are IOConnectMapMemory64 mappings made by Bergamota's libdrm stand-in (gpu/freedreno-sweet) */
++#ifdef __cplusplus
++extern "C" {
++#endif
++void *sweet_drm_mmap(int fd, size_t len, uint64_t off);
++int sweet_drm_munmap(void *addr, size_t len);
++int64_t sweet_drm_prime_size(int prime_fd);
++#ifdef __cplusplus
++}
++#endif
++#endif
++
+ struct tu_u_trace_syncobj;
+ struct tu_queue;
+ struct vdrm_bo;
+diff --git a/src/freedreno/vulkan/tu_knl_drm_msm.cc b/src/freedreno/vulkan/tu_knl_drm_msm.cc
+index 84ab61f..78fa54c 100644
+--- a/src/freedreno/vulkan/tu_knl_drm_msm.cc
++++ b/src/freedreno/vulkan/tu_knl_drm_msm.cc
+@@ -892,6 +892,13 @@ msm_bo_init(struct tu_device *dev,
+       .size = size,
+       .flags = 0
+    };
++#ifdef __APPLE__
++   /* Chlorophyll (iOS, SweetAdreno): the kernel leaves an unmapped guard page after every BO, where Linux's msm maps BOs
++    * back to back. The GPU's sequential readers (instruction prefetch past a shader's end, vertex and texture fetch, ...)
++    * may run a little past the end of a BO; here that is an SMMU fault and a GPU recovery (SpringBoard, 2026-10-26: reads
++    * at the first byte of the page after a BO). One page of slack per BO, which the BO's own size does not include. */
++   req.size = size + 4096;
++#endif
+ 
+    if (mem_property & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) {
+       if (mem_property & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
+@@ -970,9 +977,14 @@ msm_bo_init_dmabuf(struct tu_device *dev,
+ {
+    flags = (enum tu_bo_alloc_flags)(flags | TU_BO_ALLOC_DMABUF);
+ 
++#ifdef __APPLE__
++   /* Chlorophyll: a "prime fd" of the libdrm stand-in (an IOSurface made a BO by SURFACE_BO) knows its size there */
++   off_t real_size = (off_t)sweet_drm_prime_size(prime_fd);
++#else
+    /* lseek() to get the real size */
+    off_t real_size = lseek(prime_fd, 0, SEEK_END);
+    lseek(prime_fd, 0, SEEK_SET);
++#endif
+    if (real_size < 0 || (uint64_t) real_size < size)
+       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+ 
+@@ -1037,10 +1049,18 @@ msm_bo_map(struct tu_device *dev, struct tu_bo *bo, void *placed_addr)
+    if (!offset)
+       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+ 
++#ifdef __APPLE__
++   /* Chlorophyll: a BO map is an IOConnectMapMemory64 mapping made by the libdrm stand-in (gpu/freedreno-sweet), which
++    * cannot be placed at a fixed address */
++   if (placed_addr != NULL)
++      return vk_error(dev, VK_ERROR_MEMORY_MAP_FAILED);
++   void *map = sweet_drm_mmap(dev->fd, bo->size, offset);
++#else
+    /* TODO: Should we use the wrapper os_mmap() like Freedreno does? */
+    void *map = mmap(placed_addr, bo->size, PROT_READ | PROT_WRITE,
+                     MAP_SHARED | (placed_addr != NULL ? MAP_FIXED : 0),
+                     dev->fd, offset);
++#endif
+    if (map == MAP_FAILED)
+       return vk_error(dev, VK_ERROR_MEMORY_MAP_FAILED);
+ 
+@@ -1136,7 +1156,11 @@ msm_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+ 
+    if (bo->map) {
+       TU_RMV(bo_unmap, dev, bo);
++#ifdef __APPLE__
++      sweet_drm_munmap(bo->map, bo->size);   /* Chlorophyll: IOKit mapping (libdrm stand-in) */
++#else
+       munmap(bo->map, bo->size);
++#endif
+    }
+ 
+    TU_RMV(bo_destroy, dev, bo);
+@@ -1594,7 +1618,12 @@ tu_knl_drm_msm_load(struct tu_instance *instance,
+ 
+    /* Version 1.6 added SYNCOBJ support. */
+    const int min_version_major = 1;
++#ifdef __APPLE__
++   /* Chlorophyll: the libdrm stand-in reports 1.4 and emulates syncobjs on top of the kernel's fences itself */
++   const int min_version_minor = 4;
++#else
+    const int min_version_minor = 6;
++#endif
+ 
+    if (version->version_major != min_version_major ||
+        version->version_minor < min_version_minor) {
+@@ -1651,6 +1680,11 @@ tu_knl_drm_msm_load(struct tu_instance *instance,
+ 
+    device->has_set_iova = !tu_drm_get_va_prop(device, &device->va_start,
+                                               &device->va_size);
++#ifdef __APPLE__
++   /* Chlorophyll: one GPU address space for every process (PP_PGTABLE 0) with kernel-assigned addresses, so Turnip takes
++    * the kernel's addresses too (GET_IOVA) instead of picking its own */
++   device->has_set_iova = false;
++#endif
+    device->has_lazy_bos = device->has_set_iova;
+    device->has_raytracing = tu_drm_get_raytracing(device);
+    device->has_sparse_prr = tu_drm_get_prr(device);
+diff --git a/src/freedreno/vulkan/tu_pipeline.cc b/src/freedreno/vulkan/tu_pipeline.cc
+index 100c32c..b2a70c2 100644
+--- a/src/freedreno/vulkan/tu_pipeline.cc
++++ b/src/freedreno/vulkan/tu_pipeline.cc
+@@ -2842,7 +2842,7 @@ tu6_emit_viewport_fdm(struct tu_cs *cs, struct tu_cmd_buffer *cmd,
+    tu_create_fdm_bin_patchpoint(cmd, cs, size, TU_FDM_NONE,
+                                 fdm_apply_viewports, state);
+    cmd->state.rp.shared_viewport |= !cmd->state.per_view_viewport &&
+-      !cmd->state.program.per_layer_viewport;
++      !cmd->state.program->per_layer_viewport;
+ }
+ 
+ static const enum mesa_vk_dynamic_graphics_state tu_scissor_state[] = {
+@@ -4300,8 +4300,8 @@ tu_emit_draw_state(struct tu_cmd_buffer *cmd)
+                cmd->state.dirty & (TU_CMD_DIRTY_SUBPASS | TU_CMD_DIRTY_SHADING_RATE),
+                &cmd->vk.dynamic_graphics_state.fsr,
+                cmd->state.subpass->fsr_attachment != VK_ATTACHMENT_UNUSED,
+-               cmd->state.program.writes_shading_rate,
+-               cmd->state.program.reads_shading_rate);
++               cmd->state.program->writes_shading_rate,
++               cmd->state.program->reads_shading_rate);
+    }
+    DRAW_STATE_COND(rast, TU_DYNAMIC_STATE_RAST,
+                    cmd->state.dirty & (TU_CMD_DIRTY_SUBPASS |
+@@ -4327,7 +4327,7 @@ tu_emit_draw_state(struct tu_cmd_buffer *cmd)
+                    cmd->state.shaders[MESA_SHADER_VERTEX],
+                    cmd->state.shaders[MESA_SHADER_TESS_CTRL],
+                    cmd->state.shaders[MESA_SHADER_TESS_EVAL],
+-                   &cmd->state.program,
++                   cmd->state.program,
+                    cmd->vk.dynamic_graphics_state.ts.patch_control_points);
+    if (!cmd->device->physical_device->info->props.has_coherent_ubwc_flag_caches) {
+       DRAW_STATE_COND(prim_mode_sysmem,
+diff --git a/src/util/cache_ops_aarch64.c b/src/util/cache_ops_aarch64.c
+index d56ab8a..ff7706a 100644
+--- a/src/util/cache_ops_aarch64.c
++++ b/src/util/cache_ops_aarch64.c
+@@ -26,12 +26,29 @@
+ #include "util/macros.h"
+ #include "util/u_atomic.h"
+ 
++#ifdef __APPLE__
++#include <sys/sysctl.h>
++#endif
++
+ static uint32_t
+ get_ctr_el0(void)
+ {
++#ifdef __APPLE__
++   /* Chlorophyll: Bergamota's XNU traps EL0 reads of CTR_EL0 (SIGILL). Build the fields read here (CWG [27:24],
++    * DminLine [19:16], IminLine [3:0], all log2 of words) from the line size the kernel reports. */
++   uint64_t line = 0;
++   size_t len = sizeof(line);
++   if (sysctlbyname("hw.cachelinesize", &line, &len, NULL, 0) != 0 || line < 16)
++      line = 64;
++   uint32_t lg = 0;
++   while ((4u << lg) < line)
++      lg++;
++   return lg << 24 | lg << 16 | lg;
++#else
+    uint32_t ctr_el0;
+    __asm("mrs\t%x0, ctr_el0" : "=r"(ctr_el0));
+    return ctr_el0;
++#endif
+ }
+ 
+ static uint32_t
+diff --git a/src/vulkan/meson.build b/src/vulkan/meson.build
+index 614a33a..f9a7af1 100644
+--- a/src/vulkan/meson.build
++++ b/src/vulkan/meson.build
+@@ -54,7 +54,7 @@ if with_platform_wayland
+   vulkan_wsi_deps += dep_wayland_client
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_WAYLAND_KHR'
+ endif
+-if system_has_kms_drm and not with_platform_android
++if system_has_kms_drm and not with_platform_android and host_machine.system() != 'darwin'   # Chlorophyll: no KMS on iOS
+   vulkan_wsi_deps += [dep_libdrm, dep_display_info]
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_DISPLAY_KHR'
+ endif
+diff --git a/src/vulkan/wsi/meson.build b/src/vulkan/wsi/meson.build
+index 80925d1..6480332 100644
+--- a/src/vulkan/wsi/meson.build
++++ b/src/vulkan/wsi/meson.build
+@@ -38,7 +38,8 @@ if with_platform_macos
+   files_vulkan_wsi += files('wsi_common_metal.c', 'wsi_common_metal_layer.m')
+ endif
+ 
+-if system_has_kms_drm and not with_platform_android
++# Chlorophyll: no KMS on iOS (the libdrm stand-in has no drmMode*), so no VK_KHR_display
++if system_has_kms_drm and not with_platform_android and host_machine.system() != 'darwin'
+   files_vulkan_wsi += files('wsi_common_display.c')
+ endif
+ 

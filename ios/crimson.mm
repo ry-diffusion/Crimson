@@ -2,7 +2,7 @@
  * libcrimson.dylib (Crimson, a fork of metal2vulkan): a Metal device from metal2vulkan (steelbrain/metal2vulkan, GPL-2.0-or-later OR LGPL-3.0-or-later) through
  * ios-guacamole's NativeAdrenoMetal frontend and bridge (MIT, UniXNU via ios-flame), on Chlorophyll's own Turnip
  * (libchlorophyll.dylib's ICD entry points, our kernel through the libdrm stand-in). A trial beside Chlorophyll's own
- * runtime: the inject (chlorophyll-turnip inject/bgmtl_inject.m) asks m2v_create_device() instead of bgmtl_create_device() for a process whose
+ * runtime: the inject (ios/inject/crimson_inject.m) asks m2v_create_device() for a process whose
  * /private/var/tmp/bgmtl.m2v.<bundle id> exists, and registers the answer with MTLAddDevice the same way.
  * Log: /private/var/tmp/crimson.log (or the old m2v.log; when it exists), lines "M2V[pid name]: ...".
  */
